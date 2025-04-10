@@ -101,6 +101,10 @@ def process_workorders(file_path):
 
         for attempt in range(1, max_attempts + 1):
             try:
+                # If current URL doesn't match the expected WO, reload it
+                if not driver.current_url.strip().endswith(wo_number):
+                    driver.get(url)
+
                 displayed_wo_elem = WebDriverWait(driver, 10).until(
                     EC.presence_of_element_located((By.XPATH, "//td[contains(text(), 'Work Order #:')]/following-sibling::td"))
                 )
