@@ -141,7 +141,13 @@ def process_workorders(file_path):
             matched_option = None
             for option in select.options:
                 full_text = option.text.lower().strip()
-                if full_text.startswith(first_name) and f"{first_name} {last_initial}" in full_text:
+                full_parts = full_text.split()
+                if len(full_parts) >= 2:
+                    full_first = full_parts[0]
+                    full_last_initial = full_parts[1][0]
+                    if full_first.startswith(first_name) and full_last_initial == last_initial:
+                        matched_option = option.text
+                        break
                     matched_option = option.text
                     break
 
