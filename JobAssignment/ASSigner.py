@@ -1,6 +1,7 @@
 import sys
 import os
-sys.path.append(os.path.join(os.path.dirname(__file__), "python-embed", "lib"))
+import time
+sys.path.append(os.path.join(os.path.dirname(__file__), "embedded_python", "lib"))
 
 import pandas as pd
 from datetime import datetime
@@ -75,29 +76,49 @@ def process_workorders(file_path):
 
     for index, row in filtered_df.iterrows():
         raw_wo = row['WO']
-        dropdown_value = str(row['Name']).lower().strip()
+        raw_name = str(row['Name']).strip()
+        name_parts = raw_name.split()
+        if len(name_parts) >= 2:
+            dropdown_value = f"{name_parts[0].capitalize()} {name_parts[1][0].upper()}"
+        else:
+            dropdown_value = raw_name.capitalize()
 
         # Validate WO number
         try:
             wo_number = str(int(raw_wo))
         except (ValueError, TypeError):
             excel_row = index + 2
-            print(f"\u274c Invalid WO number '{raw_wo}' on spreadsheet line {excel_row}.")
+            print(f"❌ Invalid WO number '{raw_wo}' on spreadsheet line {excel_row}.")
             continue
 
         url = BASE_URL + wo_number
-        print(f"\n\U0001F517 Opening WO #{wo_number} — {url}")
+        print(f"\n🔗 Opening WO #{wo_number} — {url}")
         driver.get(url)
 
-        # Wait until page is reachable or check for browser error
-        try:
-            WebDriverWait(driver, 60).until(
-                EC.presence_of_element_located((By.ID, "AssignmentsList"))
-            )
-        except:
-            if "This site can’t be reached" in driver.page_source or "ERR_" in driver.page_source:
-                print(f"\u274c Failed to load WO #{wo_number} — site unreachable.")
-                continue
+        # Retry logic to ensure correct WO page is loaded
+        max_attempts = 3
+        matched_wo = False
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                displayed_wo_elem = WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.XPATH, "//td[contains(text(), 'Work Order #:')]/following-sibling::td"))
+                )
+                displayed_wo = displayed_wo_elem.text.strip()
+
+                if displayed_wo == wo_number:
+                    matched_wo = True
+                    break
+                else:
+                    print(f"🟡 Attempt {attempt}: Page shows WO #{displayed_wo}, expected #{wo_number}. Retrying...")
+            except Exception as e:
+                print(f"🟡 Attempt {attempt}: Unable to find WO number on page. Retrying...")
+
+            time.sleep(5)
+
+        if not matched_wo:
+            print(f"❌ Failed to verify correct WO after 3 attempts — skipping WO #{wo_number}")
+            continue
 
         try:
             dropdown = WebDriverWait(driver, 60).until(
@@ -105,8 +126,11 @@ def process_workorders(file_path):
             )
             select = Select(dropdown)
 
-            # Parse first name and last initial
-            parts = dropdown_value.split()
+            # Parse first name and last initial with capitalization handling
+            parts = dropdown_value.strip().lower().split()
+            if not parts:
+                print(f"❌ No valid name format for WO #{wo_number} — skipping.")
+                continue
             first_name = parts[0]
             last_initial = parts[1][0] if len(parts) > 1 else ""
 
@@ -118,20 +142,19 @@ def process_workorders(file_path):
                     break
 
             if not matched_option:
-                print(f"\u274c No dropdown match for '{dropdown_value}' — skipping WO #{wo_number}")
+                print(f"❌ No dropdown match for '{dropdown_value}' — skipping WO #{wo_number}")
                 continue
 
-            # Check assignments
             assignments_div = WebDriverWait(driver, 5).until(
                 EC.presence_of_element_located((By.ID, "AssignmentsList"))
             )
             assigned_names = assignments_div.text.lower()
 
             if matched_option.lower() in assigned_names:
-                print(f"\U0001F7E1 WO #{wo_number}: '{matched_option}' already assigned — skipping.")
+                print(f"🟡 WO #{wo_number}: '{matched_option}' already assigned — skipping.")
                 continue
             elif assigned_names:
-                print(f"\U0001F7E1 WO #{wo_number} has other people assigned — adding '{matched_option}'.")
+                print(f"🟡 WO #{wo_number} has other people assigned — adding '{matched_option}'.")
 
             # Assign contractor
             select.select_by_visible_text(matched_option)
@@ -141,9 +164,9 @@ def process_workorders(file_path):
             add_button.click()
 
         except Exception as e:
-            print(f"\u274c Error on WO #{wo_number}: {e}")
+            print(f"❌ Error on WO #{wo_number}: {e}")
 
-    print("\n\u2705 Done processing work orders.")
+    print("\n✅ Done processing work orders.")
     input("\nPress Enter to close...")
 
 # === DRAG & DROP GUI ===
@@ -175,5 +198,5 @@ if __name__ == "__main__":
     try:
         create_gui()
     except Exception as e:
-        print(f"\n\u274c Fatal error: {e}")
+        print(f"\n❌ Fatal error: {e}")
         input("\nPress Enter to close...")
