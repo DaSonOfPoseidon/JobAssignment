@@ -1,13 +1,13 @@
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), "python-embed", "lib"))
+CHROMEDRIVER_PATH = os.path.join(os.path.dirname(__file__), "chromedriver.exe")
 
 import pandas as pd
 from datetime import datetime
 import tkinter as tk
 from tkinterdnd2 import DND_FILES, TkinterDnD
 import webbrowser
-
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -17,12 +17,12 @@ from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
 # === CONFIGURATION ===
-COLUMN_DATE = 'A'
-COLUMN_WO = 'E'
-COLUMN_DROPDOWN = 'H'
+COLUMN_DATE = 0       # Column A
+COLUMN_WO = 4         # Column E
+COLUMN_DROPDOWN = 7   # Column H
 BASE_URL = "http://inside.sockettelecom.com/workorders/view.php?nCount="
 
-# === DATE PARSING ===
+# === DATE PARSING FUNCTION ===
 def flexible_date_parser(date_str):
     try:
         return pd.to_datetime(str(date_str), errors='coerce')
@@ -33,17 +33,23 @@ def flexible_date_parser(date_str):
 def process_workorders(file_path):
     print(f"\nProcessing file: {file_path}")
 
-    df = pd.read_excel(file_path)
-    df[COLUMN_DATE] = df[COLUMN_DATE].apply(flexible_date_parser)
-    df = df.dropna(subset=[COLUMN_DATE, COLUMN_WO, COLUMN_DROPDOWN])
+    df_raw = pd.read_excel(file_path)
 
-    # Show unique available dates
-    unique_dates = sorted(df[COLUMN_DATE].dt.date.unique())
-    print("\nAvailable Dates in Spreadsheet:")
+    # Pull from fixed columns (A, E, H)
+    df = pd.DataFrame()
+    df['Date'] = df_raw.iloc[:, COLUMN_DATE].apply(flexible_date_parser)
+    df['WO'] = df_raw.iloc[:, COLUMN_WO]
+    df['Name'] = df_raw.iloc[:, COLUMN_DROPDOWN]
+
+    df = df.dropna(subset=['Date', 'WO', 'Name'])
+
+    # Show available dates
+    unique_dates = sorted(df['Date'].dt.date.unique())
+    print("\nAvailable Dates:")
     for d in unique_dates:
         print(f" - {d}")
 
-    # Prompt for date range
+    # Ask for date range
     start_input = input("\nEnter start date (YYYY-MM-DD): ")
     end_input = input("Enter end date (YYYY-MM-DD): ")
     try:
@@ -54,23 +60,27 @@ def process_workorders(file_path):
         input("\nPress Enter to close...")
         return
 
-    filtered_df = df[(df[COLUMN_DATE].dt.date >= start_date) & (df[COLUMN_DATE].dt.date <= end_date)]
+    filtered_df = df[(df['Date'].dt.date >= start_date) & (df['Date'].dt.date <= end_date)]
 
     if filtered_df.empty:
-        print("No matching jobs found in that date range.")
+        print("No matching jobs found for that date range.")
         input("\nPress Enter to close...")
         return
 
-    print(f"\n Processing {len(filtered_df)} work orders...")
+    print(f"\nProcessing {len(filtered_df)} work orders...")
 
-    # Setup Selenium
+
+    # Setup Selenium using local ChromeDriver
     options = webdriver.ChromeOptions()
     options.add_argument("--start-maximized")
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+
+    CHROMEDRIVER_PATH = os.path.join(os.path.dirname(__file__), "chromedriver.exe")
+    driver = webdriver.Chrome(service=Service(CHROMEDRIVER_PATH), options=options)
+
 
     for index, row in filtered_df.iterrows():
-        raw_wo = row[COLUMN_WO]
-        dropdown_value = str(row[COLUMN_DROPDOWN]).lower().strip()
+        raw_wo = row['WO']
+        dropdown_value = str(row['Name']).lower().strip()
 
         # Validate WO number
         try:
@@ -84,7 +94,16 @@ def process_workorders(file_path):
         print(f"\nOpening WO #{wo_number} — {url}")
         driver.get(url)
 
+        # Check for Chrome error page
+        if "This site can’t be reached" in driver.page_source or "ERR_" in driver.page_source:
+            print(f"Failed to load WO #{wo_number} — site unreachable.")
+            continue
+
         try:
+            dropdown = WebDriverWait(driver, 60).until(
+                EC.presence_of_element_located((By.ID, "AssignEmpID"))
+            )
+
             # Check if someone is already assigned
             try:
                 assignments_div = WebDriverWait(driver, 5).until(
@@ -95,14 +114,13 @@ def process_workorders(file_path):
                     print(f"WO #{wo_number} already has assignees. Adding additional person.")
             except:
                 pass  # No assignment list found — that's okay
-
-            # Dropdown
+            
             dropdown = WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.ID, "AssignEmpID"))
             )
             select = Select(dropdown)
 
-            # Attempt to match contractor name
+            # Find matching full contractor name
             matched_option = None
             for option in select.options:
                 full_text = option.text.lower().strip()
@@ -113,7 +131,8 @@ def process_workorders(file_path):
             if not matched_option:
                 print(f"No dropdown match for '{dropdown_value}' — skipping WO #{wo_number}")
                 continue
-            # Check if the contractor is already assigned
+
+            # Check if already assigned
             already_assigned = False
             try:
                 assignments_div = WebDriverWait(driver, 5).until(
@@ -121,15 +140,15 @@ def process_workorders(file_path):
                 )
                 assigned_names = assignments_div.text.lower()
                 if matched_option.lower() in assigned_names:
-                    print(f"🟡 WO #{wo_number} already includes '{matched_option}' — skipping.")
+                    print(f"WO #{wo_number} already includes '{matched_option}' — skipping.")
                     already_assigned = True
             except:
-                pass 
+                pass
 
             if already_assigned:
-                continue  # Skip this WO
+                continue
 
-            # Assign the WO
+            # Assign contractor
             select.select_by_visible_text(matched_option)
             add_button = WebDriverWait(driver, 10).until(
                 EC.element_to_be_clickable((By.XPATH, "//button[contains(@class, 'Socket')]"))
@@ -142,7 +161,7 @@ def process_workorders(file_path):
     print("\nDone processing work orders.")
     input("\nPress Enter to close...")
 
-# === GUI SETUP ===
+# === DRAG & DROP GUI ===
 def create_gui():
     app = TkinterDnD.Tk()
     app.title("Drop Excel File")
