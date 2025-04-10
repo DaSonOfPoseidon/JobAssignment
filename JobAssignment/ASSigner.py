@@ -1,9 +1,13 @@
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), "python-embed", "lib"))
+
 import pandas as pd
 from datetime import datetime
 import tkinter as tk
 from tkinterdnd2 import DND_FILES, TkinterDnD
-import os
 import webbrowser
+
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
