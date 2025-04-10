@@ -1,7 +1,6 @@
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), "python-embed", "lib"))
-CHROMEDRIVER_PATH = os.path.join(os.path.dirname(__file__), "chromedriver.exe")
 
 import pandas as pd
 from datetime import datetime
@@ -14,13 +13,13 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import Select, WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 
 # === CONFIGURATION ===
 COLUMN_DATE = 0       # Column A
 COLUMN_WO = 4         # Column E
 COLUMN_DROPDOWN = 7   # Column H
 BASE_URL = "http://inside.sockettelecom.com/workorders/view.php?nCount="
+CHROMEDRIVER_PATH = os.path.join(os.path.dirname(__file__), "chromedriver.exe")
 
 # === DATE PARSING FUNCTION ===
 def flexible_date_parser(date_str):
@@ -69,14 +68,10 @@ def process_workorders(file_path):
 
     print(f"\nProcessing {len(filtered_df)} work orders...")
 
-
     # Setup Selenium using local ChromeDriver
     options = webdriver.ChromeOptions()
     options.add_argument("--start-maximized")
-
-    CHROMEDRIVER_PATH = os.path.join(os.path.dirname(__file__), "chromedriver.exe")
     driver = webdriver.Chrome(service=Service(CHROMEDRIVER_PATH), options=options)
-
 
     for index, row in filtered_df.iterrows():
         raw_wo = row['WO']
@@ -87,78 +82,68 @@ def process_workorders(file_path):
             wo_number = str(int(raw_wo))
         except (ValueError, TypeError):
             excel_row = index + 2
-            print(f"Invalid WO number '{raw_wo}' on spreadsheet line {excel_row}.")
+            print(f"\u274c Invalid WO number '{raw_wo}' on spreadsheet line {excel_row}.")
             continue
 
         url = BASE_URL + wo_number
-        print(f"\nOpening WO #{wo_number} — {url}")
+        print(f"\n\U0001F517 Opening WO #{wo_number} — {url}")
         driver.get(url)
 
-        # Check for Chrome error page
-        if "This site can’t be reached" in driver.page_source or "ERR_" in driver.page_source:
-            print(f"Failed to load WO #{wo_number} — site unreachable.")
-            continue
+        # Wait until page is reachable or check for browser error
+        try:
+            WebDriverWait(driver, 60).until(
+                EC.presence_of_element_located((By.ID, "AssignmentsList"))
+            )
+        except:
+            if "This site can’t be reached" in driver.page_source or "ERR_" in driver.page_source:
+                print(f"\u274c Failed to load WO #{wo_number} — site unreachable.")
+                continue
 
         try:
             dropdown = WebDriverWait(driver, 60).until(
                 EC.presence_of_element_located((By.ID, "AssignEmpID"))
             )
-
-            # Check if someone is already assigned
-            try:
-                assignments_div = WebDriverWait(driver, 5).until(
-                    EC.presence_of_element_located((By.ID, "AssignmentsList"))
-                )
-                assigned_names = assignments_div.text.strip()
-                if assigned_names:
-                    print(f"WO #{wo_number} already has assignees. Adding additional person.")
-            except:
-                pass  # No assignment list found — that's okay
-            
-            dropdown = WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.ID, "AssignEmpID"))
-            )
             select = Select(dropdown)
 
-            # Find matching full contractor name
+            # Parse first name and last initial
+            parts = dropdown_value.split()
+            first_name = parts[0]
+            last_initial = parts[1][0] if len(parts) > 1 else ""
+
             matched_option = None
             for option in select.options:
                 full_text = option.text.lower().strip()
-                if dropdown_value in full_text or full_text.startswith(dropdown_value.split()[0]):
+                if full_text.startswith(first_name) and f"{first_name} {last_initial}" in full_text:
                     matched_option = option.text
                     break
 
             if not matched_option:
-                print(f"No dropdown match for '{dropdown_value}' — skipping WO #{wo_number}")
+                print(f"\u274c No dropdown match for '{dropdown_value}' — skipping WO #{wo_number}")
                 continue
 
-            # Check if already assigned
-            already_assigned = False
-            try:
-                assignments_div = WebDriverWait(driver, 5).until(
-                    EC.presence_of_element_located((By.ID, "AssignmentsList"))
-                )
-                assigned_names = assignments_div.text.lower()
-                if matched_option.lower() in assigned_names:
-                    print(f"WO #{wo_number} already includes '{matched_option}' — skipping.")
-                    already_assigned = True
-            except:
-                pass
+            # Check assignments
+            assignments_div = WebDriverWait(driver, 5).until(
+                EC.presence_of_element_located((By.ID, "AssignmentsList"))
+            )
+            assigned_names = assignments_div.text.lower()
 
-            if already_assigned:
+            if matched_option.lower() in assigned_names:
+                print(f"\U0001F7E1 WO #{wo_number}: '{matched_option}' already assigned — skipping.")
                 continue
+            elif assigned_names:
+                print(f"\U0001F7E1 WO #{wo_number} has other people assigned — adding '{matched_option}'.")
 
             # Assign contractor
             select.select_by_visible_text(matched_option)
-            add_button = WebDriverWait(driver, 10).until(
+            add_button = WebDriverWait(driver, 60).until(
                 EC.element_to_be_clickable((By.XPATH, "//button[contains(@class, 'Socket')]"))
             )
             add_button.click()
 
         except Exception as e:
-            print(f"Error on WO #{wo_number}: {e}")
+            print(f"\u274c Error on WO #{wo_number}: {e}")
 
-    print("\nDone processing work orders.")
+    print("\n\u2705 Done processing work orders.")
     input("\nPress Enter to close...")
 
 # === DRAG & DROP GUI ===
@@ -190,5 +175,5 @@ if __name__ == "__main__":
     try:
         create_gui()
     except Exception as e:
-        print(f"\nFatal error: {e}")
+        print(f"\n\u274c Fatal error: {e}")
         input("\nPress Enter to close...")

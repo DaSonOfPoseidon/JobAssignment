@@ -1,14 +1,29 @@
 @echo off
 cd /d %~dp0
 
-echo Setting up local environment...
-python-embed\python.exe -m ensurepip --default-pip
-python-embed\python.exe -m pip install --upgrade pip
+REM === SETUP LOCAL PYTHON ENVIRONMENT ===
+IF NOT EXIST "embedded_python\Scripts\pip.exe" (
+    echo Setting up pip in embedded Python...
+    embedded_python\python.exe -m ensurepip --default-pip
+)
 
-echo Installing dependencies...
-python-embed\python.exe -m pip install -r requirements.txt --target=python-embed\lib
+REM === INSTALL MISSING DEPENDENCIES ONLY ===
+echo Checking Python packages...
+SETLOCAL ENABLEDELAYEDEXPANSION
+SET PACKAGES=pandas selenium openpyxl webdriver-manager tkinterdnd2
+FOR %%P IN (%PACKAGES%) DO (
+    embedded_python\python.exe -c "import %%P" 2>NUL
+    IF ERRORLEVEL 1 (
+        echo Installing: %%P
+        embedded_python\python.exe -m pip install %%P --target=embedded_python\lib
+    ) ELSE (
+        echo Found: %%P
+    )
+)
+ENDLOCAL
 
-echo Launching the tool...
-python-embed\python.exe ASSigner.py
+REM === LAUNCH THE TOOL ===
+echo Starting tool...
+embedded_python\python.exe assign_workorders_gui.py
 
 pause
