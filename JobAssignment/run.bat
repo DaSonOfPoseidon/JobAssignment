@@ -9,6 +9,6 @@ echo Installing dependencies...
 python-embed\python.exe -m pip install -r requirements.txt --target=python-embed\lib
 
 echo Launching the tool...
-python-embed\python.exe assign_workorders_gui.py
+python-embed\python.exe ASSigner.py
 
 pause
