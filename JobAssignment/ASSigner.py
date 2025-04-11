@@ -148,8 +148,6 @@ def process_workorders(file_path):
                     if full_first.startswith(first_name) and full_last_initial == last_initial:
                         matched_option = option.text
                         break
-                    matched_option = option.text
-                    break
 
             if not matched_option:
                 print(f"❌ No dropdown match for '{dropdown_value}' — skipping WO #{wo_number}")
@@ -161,10 +159,18 @@ def process_workorders(file_path):
             assigned_names = assignments_div.text.lower()
 
             if matched_option.lower() in assigned_names:
-                print(f"🟡 WO #{wo_number}: '{matched_option}' already assigned — skipping.")
+                print(f"🟡 WO #{wo_number}: '{matched_option}' is already assigned — skipping.")
+                others_assigned = [name for name in assignments_div.text.strip().splitlines() if matched_option.lower() not in name.lower()]
+                if others_assigned:
+                    print(f"   → Also assigned: {', '.join(others_assigned)}")
                 continue
             elif assigned_names:
-                print(f"🟡 WO #{wo_number} has other people assigned — adding '{matched_option}'.")
+                print(f"🟢 Tech assigned: '{matched_option}'")
+                others_assigned = [name for name in assignments_div.text.strip().splitlines() if matched_option.lower() not in name.lower()]
+                if others_assigned:
+                    print(f"   → Other people already assigned: {', '.join(others_assigned)}")
+            else:
+                print(f"🟢 Tech assigned: '{matched_option}'")
 
             # Assign contractor
             select.select_by_visible_text(matched_option)
