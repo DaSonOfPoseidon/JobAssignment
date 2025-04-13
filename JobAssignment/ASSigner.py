@@ -1,5 +1,6 @@
 import sys
 import os
+import re
 import time
 import tempfile
 from datetime import datetime
@@ -35,6 +36,13 @@ NAME_CORRECTIONS = {
     "cliff": "Clifford Kunkle",
     "christopher k": "Chris Kunkle",
     "simmie": "Simmie Dunn",
+    "will": "William Woods",
+    "nick": "Nick Prichett",
+    "kyle": "Kyle Thatcher",
+    "blake": "Blake Wellman",
+    "jacob": "Jacob Jones",
+    "adam": "Adam Ward"
+
 }
 
 log_lines = []
@@ -60,7 +68,7 @@ def format_time_str(t):
         return t.strip()
 
 def show_first_jobs(first_jobs):
-    from tkinter import Toplevel, Scrollbar, Text, RIGHT, Y, END
+    from tkinter import Toplevel, Scrollbar, Text, RIGHT, Y, END, Button
 
     popup = Toplevel()
     popup.title("First Jobs Summary")
@@ -73,11 +81,25 @@ def show_first_jobs(first_jobs):
     text.pack(side="left", fill="both", expand=True)
     scrollbar.pack(side=RIGHT, fill=Y)
 
+    all_text = ""
+
     for day, jobs in first_jobs.items():
-        text.insert(END, f"{day.strftime('%A %m/%d/%Y')}\n")
+        all_text += f"{day.strftime('%A %m/%d/%Y')}\n"
         for j in jobs:
-            text.insert(END, f"{j}\n")
-        text.insert(END, "\n")
+            all_text += f"{j}\n"
+        all_text += "\n"
+
+    text.insert(END, all_text)
+    popup.clipboard_clear()
+    popup.clipboard_append(all_text.strip())
+
+    def copy_to_clipboard():
+        popup.clipboard_clear()
+        popup.clipboard_append(all_text.strip())
+
+    copy_button = Button(popup, text="Copy to Clipboard", command=copy_to_clipboard)
+    copy_button.pack(pady=5)
+
 
 def process_workorders(file_path):
     print(f"\nProcessing file: {file_path}")
@@ -278,16 +300,140 @@ def process_workorders(file_path):
                 if tech not in seen:
                     seen.add(tech)
                     formatted_time = row['TimeParsed'].strftime("%I%p").lstrip("0").lower()
-                    candidate_line = f"{formatted_time} - {tech} - {row['Name']} - {row['Type']} - {row['Address']} - {row['WO']}"
-                    log(f"📌 First job candidate: {candidate_line}")
+                    candidate_line = f"{tech} - {formatted_time} - {row['Name']} - {row['Type']} - {row['Address']} - WO {row['WO']}"
                     first_jobs[date].append(candidate_line)
 
     want_first = input("\nOutput First Jobs? (y/n): ").strip().lower()
     if want_first == 'y':
         show_first_jobs(first_jobs)
 
+def reformat_contractor_text(raw_text):
+    lines = raw_text.splitlines()
+    contractor = None
+    date = None
+    time_slot = None
+    data = []
 
-    input("\nPress Enter to close...")
+    contractor_pattern = re.compile(r'^[A-Z]{2,}(?:\s+[A-Z]{2,})?$')
+    date_pattern = re.compile(r'\d{1,2}/\d{1,2}/\d{4}')
+    time_pattern = re.compile(r'^\d{1,2}\s?(AM|PM)$', re.IGNORECASE)
+    wo_pattern = re.compile(r'WO\s*#?\s*(\d+)', re.IGNORECASE)
+
+    skip_contractor_labels = {"SPLICING", "SPLICE", "DROP CREW", "BURY", "ENGINEERING", "STL", "PRE-BURY", "UNASSIGNED", "CANCELLED"}
+
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+
+        # Skip empty lines or symbols
+        if not line or line.startswith(""):
+            i += 1
+            continue
+
+        # Skip unassigned/reschedule/cancelled headers
+        if any(keyword in line.upper() for keyword in ["UNASSIGNED", "RESCHEDULE", "CANCELLED", "PRE-BURY"]):
+            contractor = None
+            i += 1
+            continue
+
+        # Detect and set contractor
+        if contractor_pattern.match(line):
+            if i + 1 < len(lines):
+                next_line = lines[i + 1].strip()
+                if contractor_pattern.match(next_line):
+                    if next_line.upper() in skip_contractor_labels:
+                        contractor = None
+                        i += 2
+                        continue
+                    contractor = line.title()
+                    i += 2
+                    continue
+            contractor = line.title()
+            i += 1
+            continue
+
+        # Detect date
+        if date_match := date_pattern.search(line):
+            try:
+                date = datetime.strptime(date_match.group(), "%m/%d/%Y").date()
+            except:
+                pass
+            i += 1
+            continue
+
+        # Detect time slot
+        if time_pattern.match(line):
+            time_slot = line.upper().replace(" ", "")
+            if not time_slot.endswith("M"):
+                time_slot += "M"
+            i += 1
+            continue
+
+        # Skip if no contractor/date/time
+        if not (contractor and date and time_slot):
+            i += 1
+            continue
+
+        # Skip splicing jobs
+        if "splice" in line.lower() or "splicing" in line.lower():
+            i += 1
+            continue
+
+        # Extract WO and job info
+        if "WO" in line.upper():
+            wo_match = wo_pattern.search(line)
+            if not wo_match:
+                i += 1
+                continue
+            wo_number = wo_match.group(1)
+            
+            line = line[:wo_match.end()].strip()
+
+            parts = re.split(r'[-_]', line)
+            parts = [p.strip() for p in parts if p.strip()]
+
+            if len(parts) < 4:
+                i += 1
+                continue
+
+            customer = parts[0]
+            type_ = ""
+            address = ""
+
+            for p in parts:
+                if any(k in p.lower() for k in ["fiber", "connectorized", "install", "service"]):
+                    type_ = p
+                elif "MO" in p.upper() and any(char.isdigit() for char in p) and "WO" not in p.upper():
+                    address = p
+
+            if not (customer and type_ and address and wo_number):
+                i += 1
+                continue
+
+            data.append({
+                "Date": date,
+                "Time": time_slot,
+                "Name": customer,
+                "Type": type_,
+                "WO": wo_number,
+                "Address": address,
+                "Assignment": contractor
+            })
+
+        i += 1
+
+    if not data:
+        raise ValueError("No valid WO entries found in pasted text.")
+
+    df = pd.DataFrame(data)
+    df["Notes"] = ""
+
+    # Match Excel format: A-H
+    df = df[["Date", "Time", "Name", "Type", "WO", "Address", "Notes", "Assignment"]]
+
+    temp_path = os.path.join(tempfile.gettempdir(), "formatted_assignments.xlsx")
+    df.to_excel(temp_path, index=False)
+    return temp_path
 
 def create_gui():
     app = TkinterDnD.Tk()
@@ -314,8 +460,8 @@ def create_gui():
             print("No text to process.")
             return
         try:
-            # Placeholder for `reformat_contractor_text()` once implemented
-            print("❌ Text import not yet implemented in updated format.")
+            temp = reformat_contractor_text(raw_text)
+            process_workorders(temp)
         except Exception as e:
             print(f"❌ Error processing pasted text: {e}")
 
