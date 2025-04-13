@@ -16,7 +16,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
 
 # === CONFIGURATION ===
-SHOW_ALL_OUTPUT_IN_CONSOLE = False
+SHOW_ALL_OUTPUT_IN_CONSOLE = True
 CHROMEDRIVER_PATH = os.path.join(os.path.dirname(__file__), "chromedriver.exe")
 LOG_FOLDER = os.path.join(os.path.dirname(__file__), "logs")
 os.makedirs(LOG_FOLDER, exist_ok=True)
@@ -299,8 +299,7 @@ def process_workorders(file_path):
                 if tech not in seen:
                     seen.add(tech)
                     formatted_time = row['TimeParsed'].strftime("%I%p").lstrip("0").lower()
-                    candidate_line = f"{formatted_time} - {tech} - {row['Name']} - {row['Type']} - {row['Address']} - WO {row['WO']}"
-                    log(f"📌 First job candidate: {candidate_line}")
+                    candidate_line = f"{tech} - {formatted_time} - {row['Name']} - {row['Type']} - {row['Address']} - WO {row['WO']}"
                     first_jobs[date].append(candidate_line)
 
     want_first = input("\nOutput First Jobs? (y/n): ").strip().lower()
