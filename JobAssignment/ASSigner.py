@@ -1,14 +1,13 @@
 import sys
 import os
 import time
-sys.path.append(os.path.join(os.path.dirname(__file__), "embedded_python", "lib"))
+import tempfile
+from datetime import datetime
+from collections import defaultdict
 
 import pandas as pd
-from datetime import datetime
 import tkinter as tk
 from tkinterdnd2 import DND_FILES, TkinterDnD
-import webbrowser
-
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import Select, WebDriverWait
@@ -16,40 +15,90 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
 
 # === CONFIGURATION ===
-COLUMN_DATE = 0       # Column A
-COLUMN_WO = 4         # Column E
-COLUMN_DROPDOWN = 7   # Column H
-BASE_URL = "http://inside.sockettelecom.com/workorders/view.php?nCount="
+SHOW_ALL_OUTPUT_IN_CONSOLE = False
 CHROMEDRIVER_PATH = os.path.join(os.path.dirname(__file__), "chromedriver.exe")
+LOG_FOLDER = os.path.join(os.path.dirname(__file__), "logs")
+os.makedirs(LOG_FOLDER, exist_ok=True)
 
-# === DATE PARSING FUNCTION ===
+COLUMN_DATE = 0
+COLUMN_TIME = 1
+COLUMN_NAME = 2
+COLUMN_TYPE = 3
+COLUMN_WO = 4
+COLUMN_ADDRESS = 5
+COLUMN_DROPDOWN = 7
+
+BASE_URL = "http://inside.sockettelecom.com/workorders/view.php?nCount="
+
+NAME_CORRECTIONS = {
+    "jeff t": "Jeffery Thornton",
+    "cliff": "Clifford Kunkle",
+    "christopher k": "Chris Kunkle",
+    "simmie": "Simmie Dunn",
+}
+
+log_lines = []
+
+def log(message):
+    global log_lines
+    log_lines.append(message)
+    if SHOW_ALL_OUTPUT_IN_CONSOLE and (message.startswith("🟡") or message.startswith("🟢")):
+        print(message)
+    elif message.startswith("❌") or message.startswith("✅"):
+        print(message)
+
 def flexible_date_parser(date_str):
     try:
         return pd.to_datetime(str(date_str), errors='coerce')
     except:
         return None
 
-# === MAIN PROCESSING FUNCTION ===
+def format_time_str(t):
+    try:
+        return datetime.strptime(t.strip(), "%I:%M %p").strftime("%-I%p").lower()
+    except:
+        return t.strip()
+
+def show_first_jobs(first_jobs):
+    from tkinter import Toplevel, Scrollbar, Text, RIGHT, Y, END
+
+    popup = Toplevel()
+    popup.title("First Jobs Summary")
+    popup.geometry("600x400")
+
+    text = Text(popup, wrap="word")
+    scrollbar = Scrollbar(popup, command=text.yview)
+    text.configure(yscrollcommand=scrollbar.set)
+
+    text.pack(side="left", fill="both", expand=True)
+    scrollbar.pack(side=RIGHT, fill=Y)
+
+    for day, jobs in first_jobs.items():
+        text.insert(END, f"{day.strftime('%A %m/%d/%Y')}\n")
+        for j in jobs:
+            text.insert(END, f"{j}\n")
+        text.insert(END, "\n")
+
 def process_workorders(file_path):
     print(f"\nProcessing file: {file_path}")
-
     df_raw = pd.read_excel(file_path)
 
-    # Pull from fixed columns (A, E, H)
     df = pd.DataFrame()
     df['Date'] = df_raw.iloc[:, COLUMN_DATE].apply(flexible_date_parser)
+    df['Time'] = df_raw.iloc[:, COLUMN_TIME].astype(str)
+    df['Name'] = df_raw.iloc[:, COLUMN_NAME]
+    df['Type'] = df_raw.iloc[:, COLUMN_TYPE]
     df['WO'] = df_raw.iloc[:, COLUMN_WO]
-    df['Name'] = df_raw.iloc[:, COLUMN_DROPDOWN]
+    df['Address'] = df_raw.iloc[:, COLUMN_ADDRESS]
+    df['Dropdown'] = df_raw.iloc[:, COLUMN_DROPDOWN]
 
-    df = df.dropna(subset=['Date', 'WO', 'Name'])
+    df = df.dropna(subset=['Date', 'WO', 'Dropdown'])
 
-    # Show available dates
     unique_dates = sorted(df['Date'].dt.date.unique())
     print("\nAvailable Dates:")
     for d in unique_dates:
         print(f" - {d}")
 
-    # Ask for date range
     start_input = input("\nEnter start date (YYYY-MM-DD): ")
     end_input = input("Enter end date (YYYY-MM-DD): ")
     try:
@@ -68,22 +117,19 @@ def process_workorders(file_path):
         return
 
     print(f"\nProcessing {len(filtered_df)} work orders...")
-
-    # Setup Selenium using local ChromeDriver
     options = webdriver.ChromeOptions()
     options.add_argument("--start-maximized")
     driver = webdriver.Chrome(service=Service(CHROMEDRIVER_PATH), options=options)
 
     for index, row in filtered_df.iterrows():
         raw_wo = row['WO']
-        raw_name = str(row['Name']).strip()
+        raw_name = str(row['Dropdown']).strip()
         name_parts = raw_name.split()
         if len(name_parts) >= 2:
             dropdown_value = f"{name_parts[0].capitalize()} {name_parts[1][0].upper()}"
         else:
             dropdown_value = raw_name.capitalize()
 
-        # Validate WO number
         try:
             wo_number = str(int(raw_wo))
         except (ValueError, TypeError):
@@ -92,20 +138,18 @@ def process_workorders(file_path):
             continue
 
         url = BASE_URL + wo_number
-        print(f"\n🔗 Opening WO #{wo_number} — {url}")
+        log(f"\n🔗 Opening WO #{wo_number} — {url}")
         driver.get(url)
 
-        # Retry logic to ensure correct WO page is loaded
         max_attempts = 3
         matched_wo = False
 
         for attempt in range(1, max_attempts + 1):
             try:
-                # If current URL doesn't match the expected WO, reload it
                 if not driver.current_url.strip().endswith(wo_number):
                     driver.get(url)
 
-                displayed_wo_elem = WebDriverWait(driver, 10).until(
+                displayed_wo_elem = WebDriverWait(driver, 10, poll_frequency=0.5).until(
                     EC.presence_of_element_located((By.XPATH, "//td[contains(text(), 'Work Order #:')]/following-sibling::td"))
                 )
                 displayed_wo = displayed_wo_elem.text.strip()
@@ -114,9 +158,9 @@ def process_workorders(file_path):
                     matched_wo = True
                     break
                 else:
-                    print(f"🟡 Attempt {attempt}: Page shows WO #{displayed_wo}, expected #{wo_number}. Retrying...")
-            except Exception as e:
-                print(f"🟡 Attempt {attempt}: Unable to find WO number on page. Retrying...")
+                    log(f"🟡 Attempt {attempt}: Page shows WO #{displayed_wo}, expected #{wo_number}. Retrying...")
+            except Exception:
+                log(f"🟡 Attempt {attempt}: Unable to find WO number on page. Retrying...")
 
             time.sleep(5)
 
@@ -130,24 +174,40 @@ def process_workorders(file_path):
             )
             select = Select(dropdown)
 
-            # Parse first name and last initial with capitalization handling
             parts = dropdown_value.strip().lower().split()
             if not parts:
                 print(f"❌ No valid name format for WO #{wo_number} — skipping.")
                 continue
+
             first_name = parts[0]
             last_initial = parts[1][0] if len(parts) > 1 else ""
-
             matched_option = None
-            for option in select.options:
-                full_text = option.text.lower().strip()
-                full_parts = full_text.split()
-                if len(full_parts) >= 2:
-                    full_first = full_parts[0]
-                    full_last_initial = full_parts[1][0]
-                    if full_first.startswith(first_name) and full_last_initial == last_initial:
+
+            if dropdown_value.strip().lower() in NAME_CORRECTIONS:
+                corrected_name = NAME_CORRECTIONS[dropdown_value.strip().lower()]
+                for option in select.options:
+                    if option.text.strip().lower() == corrected_name.lower():
                         matched_option = option.text
                         break
+
+            if not matched_option:
+                for option in select.options:
+                    full_text = option.text.lower().strip()
+                    full_parts = full_text.split()
+                    if len(full_parts) >= 2:
+                        full_first = full_parts[0]
+                        full_last_initial = full_parts[1][0]
+                        if full_first.startswith(first_name) and full_last_initial == last_initial:
+                            matched_option = option.text
+                            break
+
+            if not matched_option:
+                potential_matches = [opt.text for opt in select.options if opt.text.lower().startswith(first_name.lower())]
+                if len(potential_matches) == 1:
+                    matched_option = potential_matches[0]
+                elif len(potential_matches) > 1:
+                    print(f"❌ Ambiguous first name '{first_name}' — found multiple matches: {', '.join(potential_matches)}")
+                    continue
 
             if not matched_option:
                 print(f"❌ No dropdown match for '{dropdown_value}' — skipping WO #{wo_number}")
@@ -159,20 +219,13 @@ def process_workorders(file_path):
             assigned_names = assignments_div.text.lower()
 
             if matched_option.lower() in assigned_names:
-                print(f"🟡 WO #{wo_number}: '{matched_option}' is already assigned — skipping.")
-                others_assigned = [name for name in assignments_div.text.strip().splitlines() if matched_option.lower() not in name.lower()]
-                if others_assigned:
-                    print(f"   → Also assigned: {', '.join(others_assigned)}")
+                log(f"🟡 WO #{wo_number}: '{matched_option}' is already assigned — skipping.")
                 continue
             elif assigned_names:
-                print(f"🟢 Tech assigned: '{matched_option}'")
-                others_assigned = [name for name in assignments_div.text.strip().splitlines() if matched_option.lower() not in name.lower()]
-                if others_assigned:
-                    print(f"   → Other people already assigned: {', '.join(others_assigned)}")
+                log(f"🟢 Tech assigned: '{matched_option}'")
             else:
-                print(f"🟢 Tech assigned: '{matched_option}'")
+                log(f"🟢 Tech assigned: '{matched_option}'")
 
-            # Assign contractor
             select.select_by_visible_text(matched_option)
             add_button = WebDriverWait(driver, 60).until(
                 EC.element_to_be_clickable((By.XPATH, "//button[contains(@class, 'Socket')]"))
@@ -182,34 +235,98 @@ def process_workorders(file_path):
         except Exception as e:
             print(f"❌ Error on WO #{wo_number}: {e}")
 
-    print("\n✅ Done processing work orders.")
+    now = datetime.now()
+    filename = f"Output{now.strftime('%m%d%H%M')}.txt"
+    log_path = os.path.join(LOG_FOLDER, filename)
+    with open(log_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(log_lines))
+
+    print(f"\n✅ Done processing work orders.")
+    print(f"🗂️ Output saved to: {log_path}")
+
+    first_jobs = defaultdict(list)
+    if not filtered_df.empty:
+        grouped = filtered_df.copy()
+
+        # More forgiving time parsing
+        def parse_flexible_time(t):
+            t = t.strip().lower().replace('.', '')
+            formats = ("%I:%M %p", "%I %p", "%I%p", "%H:%M", "%H:%M:%S")
+            for fmt in formats:
+                try:
+                    return datetime.strptime(t, fmt)
+                except:
+                    continue
+            return pd.NaT
+
+        grouped['TimeParsed'] = grouped['Time'].apply(lambda x: parse_flexible_time(str(x)))
+
+        # Debug: show times that failed to parse
+        failed_times = grouped[grouped['TimeParsed'].isna()]
+        if not failed_times.empty:
+            print("\n⚠️ Could not parse the following time values:")
+            print(failed_times[['Time']])
+
+        # Drop rows that don't have all required fields
+        grouped = grouped.dropna(subset=['TimeParsed', 'Dropdown', 'Name', 'Type', 'Address', 'WO'])
+
+        for date, group in grouped.groupby(grouped['Date'].dt.date):
+            group = group.sort_values('TimeParsed')
+            seen = set()
+            for _, row in group.iterrows():
+                tech = row['Dropdown']
+                if tech not in seen:
+                    seen.add(tech)
+                    formatted_time = row['TimeParsed'].strftime("%I%p").lstrip("0").lower()
+                    candidate_line = f"{formatted_time} - {tech} - {row['Name']} - {row['Type']} - {row['Address']} - {row['WO']}"
+                    log(f"📌 First job candidate: {candidate_line}")
+                    first_jobs[date].append(candidate_line)
+
+    want_first = input("\nOutput First Jobs? (y/n): ").strip().lower()
+    if want_first == 'y':
+        show_first_jobs(first_jobs)
+
+
     input("\nPress Enter to close...")
 
-# === DRAG & DROP GUI ===
 def create_gui():
     app = TkinterDnD.Tk()
-    app.title("Drop Excel File")
-    app.geometry("400x200")
+    app.title("Drop Excel File or Paste Schedule Text")
+    app.geometry("600x400")
 
-    label = tk.Label(app, text="Drag and drop your Excel file here", width=40, height=10, bg="lightgray")
-    label.pack(expand=True, fill="both", padx=10, pady=10)
+    label = tk.Label(app, text="Drag and drop your Excel file here", width=60, height=5, bg="lightgray")
+    label.pack(padx=10, pady=10)
+
+    textbox = tk.Text(app, height=10, wrap="word")
+    textbox.pack(padx=10, pady=(0, 5), fill="both", expand=True)
 
     def drop(event):
         file_path = event.data.strip('{}')
-        if file_path.lower().endswith(('.xlsx', '.xls')):
-            label.config(text="Processing...")
-            app.update()
+        try:
+            df_test = pd.read_excel(file_path)
             process_workorders(file_path)
-            label.config(text="Done. Drop another file or close.")
-        else:
-            label.config(text="Not a valid Excel file.")
+        except Exception as e:
+            print(f"❌ Could not process file: {e}")
+
+    def parse_text():
+        raw_text = textbox.get("1.0", tk.END).strip()
+        if not raw_text:
+            print("No text to process.")
+            return
+        try:
+            # Placeholder for `reformat_contractor_text()` once implemented
+            print("❌ Text import not yet implemented in updated format.")
+        except Exception as e:
+            print(f"❌ Error processing pasted text: {e}")
+
+    btn = tk.Button(app, text="Parse & Assign from Pasted Text", command=parse_text)
+    btn.pack(pady=5)
 
     label.drop_target_register(DND_FILES)
     label.dnd_bind('<<Drop>>', drop)
 
     app.mainloop()
 
-# === ENTRY POINT ===
 if __name__ == "__main__":
     try:
         create_gui()
