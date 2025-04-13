@@ -16,7 +16,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
 
 # === CONFIGURATION ===
-SHOW_ALL_OUTPUT_IN_CONSOLE = True
+SHOW_ALL_OUTPUT_IN_CONSOLE = False
 CHROMEDRIVER_PATH = os.path.join(os.path.dirname(__file__), "chromedriver.exe")
 LOG_FOLDER = os.path.join(os.path.dirname(__file__), "logs")
 os.makedirs(LOG_FOLDER, exist_ok=True)
@@ -42,6 +42,7 @@ NAME_CORRECTIONS = {
     "blake": "Blake Wellman",
     "jacob": "Jacob Jones",
     "adam": "Adam Ward"
+
 }
 
 log_lines = []
