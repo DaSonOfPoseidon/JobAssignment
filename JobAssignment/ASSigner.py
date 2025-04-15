@@ -308,132 +308,184 @@ def process_workorders(file_path):
         show_first_jobs(first_jobs)
 
 def reformat_contractor_text(raw_text):
-    lines = raw_text.splitlines()
-    contractor = None
-    date = None
-    time_slot = None
+    import re
+    from datetime import timedelta
+
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
     data = []
 
-    contractor_pattern = re.compile(r'^[A-Z]{2,}(?:\s+[A-Z]{2,})?$')
-    date_pattern = re.compile(r'\d{1,2}/\d{1,2}/\d{4}')
-    time_pattern = re.compile(r'^\d{1,2}\s?(AM|PM)$', re.IGNORECASE)
-    wo_pattern = re.compile(r'WO\s*#?\s*(\d+)', re.IGNORECASE)
+    def detect_tgs_format(lines):
+        # Check if we consistently see a WO line every ~9 lines
+        wo_count = sum(1 for line in lines if re.match(r'^WO\s*\d+$', line, re.IGNORECASE))
+        return wo_count >= len(lines) // 10  # ~1 WO per 9 lines
 
-    skip_contractor_labels = {"SPLICING", "SPLICE", "DROP CREW", "BURY", "ENGINEERING", "STL", "PRE-BURY", "UNASSIGNED", "CANCELLED"}
+    is_tgs_format = detect_tgs_format(lines)
 
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
+    if is_tgs_format:
+        # === TGS VERTICAL FORMAT ===
+        print("📄 Detected TGS (vertical 9-line) job format.")
+        # Prompt for date
+        while True:
+            date_input = input("Enter the date for these jobs (YYYY-MM-DD, 'today', or 'tomorrow'): ").strip().lower()
+            if date_input == "today":
+                job_date = datetime.today().date()
+                break
+            elif date_input == "tomorrow":
+                job_date = datetime.today().date() + timedelta(days=1)
+                break
+            else:
+                try:
+                    job_date = datetime.strptime(date_input, "%Y-%m-%d").date()
+                    break
+                except ValueError:
+                    print("❌ Invalid date format. Use YYYY-MM-DD, 'today', or 'tomorrow'.")
 
-        # Skip empty lines or symbols
-        if not line or line.startswith(""):
-            i += 1
-            continue
+        i = 0
+        while i + 8 < len(lines):
+            block = lines[i:i+9]
+            time_raw = block[0]
+            type_ = block[1]
+            name = block[2]
+            account = block[3]
+            address1 = block[4]
+            city = block[5]
+            zip_ = block[6]
+            wo_match = re.match(r'^WO\s*(\d+)', block[7], re.IGNORECASE)
+            tech = block[8].title()
 
-        # Skip unassigned/reschedule/cancelled headers
-        if any(keyword in line.upper() for keyword in ["UNASSIGNED", "RESCHEDULE", "CANCELLED", "PRE-BURY"]):
-            contractor = None
-            i += 1
-            continue
-
-        # Detect and set contractor
-        if contractor_pattern.match(line):
-            if i + 1 < len(lines):
-                next_line = lines[i + 1].strip()
-                if contractor_pattern.match(next_line):
-                    if next_line.upper() in skip_contractor_labels:
-                        contractor = None
-                        i += 2
-                        continue
-                    contractor = line.title()
-                    i += 2
-                    continue
-            contractor = line.title()
-            i += 1
-            continue
-
-        # Detect date
-        if date_match := date_pattern.search(line):
-            try:
-                date = datetime.strptime(date_match.group(), "%m/%d/%Y").date()
-            except:
-                pass
-            i += 1
-            continue
-
-        # Detect time slot
-        if time_pattern.match(line):
-            time_slot = line.upper().replace(" ", "")
-            if not time_slot.endswith("M"):
-                time_slot += "M"
-            i += 1
-            continue
-
-        # Skip if no contractor/date/time
-        if not (contractor and date and time_slot):
-            i += 1
-            continue
-
-        # Skip splicing jobs
-        if "splice" in line.lower() or "splicing" in line.lower():
-            i += 1
-            continue
-
-        # Extract WO and job info
-        if "WO" in line.upper():
-            wo_match = wo_pattern.search(line)
-            if not wo_match:
-                i += 1
-                continue
-            wo_number = wo_match.group(1)
-            
-            line = line[:wo_match.end()].strip()
-
-            parts = re.split(r'[-_]', line)
-            parts = [p.strip() for p in parts if p.strip()]
-
-            if len(parts) < 4:
-                i += 1
+            if tech.lower() == "cancelled" or not wo_match:
+                i += 9
                 continue
 
-            customer = parts[0]
-            type_ = ""
-            address = ""
-
-            for p in parts:
-                if any(k in p.lower() for k in ["fiber", "connectorized", "install", "service"]):
-                    type_ = p
-                elif "MO" in p.upper() and any(char.isdigit() for char in p) and "WO" not in p.upper():
-                    address = p
-
-            if not (customer and type_ and address and wo_number):
-                i += 1
-                continue
+            wo = wo_match.group(1)
+            address = f"{address1}, {city} {zip_}"
 
             data.append({
-                "Date": date,
-                "Time": time_slot,
-                "Name": customer,
+                "Date": job_date,
+                "Time": time_raw,
+                "Name": name,
                 "Type": type_,
-                "WO": wo_number,
+                "WO": wo,
                 "Address": address,
-                "Assignment": contractor
+                "Notes": "",
+                "Assignment": tech
             })
+            i += 9
 
-        i += 1
+    else:
+        # === ORIGINAL FREEFORM FORMAT ===
+        print("📄 Detected standard freeform contractor schedule format.")
+        contractor = None
+        date = None
+        time_slot = None
+
+        contractor_pattern = re.compile(r'^[A-Z]{2,}(?:\s+[A-Z]{2,})?$')
+        date_pattern = re.compile(r'\d{1,2}/\d{1,2}/\d{4}')
+        time_pattern = re.compile(r'^\d{1,2}\s?(AM|PM)$', re.IGNORECASE)
+        wo_pattern = re.compile(r'WO\s*#?\s*(\d+)', re.IGNORECASE)
+
+        skip_contractor_labels = {
+            "SPLICING", "SPLICE", "DROP CREW", "BURY", "ENGINEERING",
+            "STL", "PRE-BURY", "UNASSIGNED", "CANCELLED"
+        }
+
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+
+            if any(keyword in line.upper() for keyword in ["UNASSIGNED", "RESCHEDULE", "CANCELLED", "PRE-BURY"]):
+                contractor = None
+                i += 1
+                continue
+
+            if contractor_pattern.match(line):
+                if i + 1 < len(lines):
+                    next_line = lines[i + 1]
+                    if contractor_pattern.match(next_line):
+                        if next_line.upper() in skip_contractor_labels:
+                            contractor = None
+                            i += 2
+                            continue
+                        contractor = line.title()
+                        i += 2
+                        continue
+                contractor = line.title()
+                i += 1
+                continue
+
+            if date_match := date_pattern.search(line):
+                try:
+                    date = datetime.strptime(date_match.group(), "%m/%d/%Y").date()
+                except:
+                    pass
+                i += 1
+                continue
+
+            if time_pattern.match(line):
+                time_slot = line.upper().replace(" ", "")
+                if not time_slot.endswith("M"):
+                    time_slot += "M"
+                i += 1
+                continue
+
+            if not (contractor and date and time_slot):
+                i += 1
+                continue
+
+            if "splice" in line.lower() or "splicing" in line.lower():
+                i += 1
+                continue
+
+            if "WO" in line.upper():
+                wo_match = wo_pattern.search(line)
+                if not wo_match:
+                    i += 1
+                    continue
+                wo_number = wo_match.group(1)
+                line = line[:wo_match.end()].strip()
+                parts = re.split(r'[-_]', line)
+                parts = [p.strip() for p in parts if p.strip()]
+                if len(parts) < 4:
+                    i += 1
+                    continue
+
+                customer = parts[0]
+                type_ = ""
+                address = ""
+
+                for p in parts:
+                    if any(k in p.lower() for k in ["fiber", "connectorized", "install", "service"]):
+                        type_ = p
+                    elif "MO" in p.upper() and any(char.isdigit() for char in p) and "WO" not in p.upper():
+                        address = p
+
+                if not (customer and type_ and address and wo_number):
+                    i += 1
+                    continue
+
+                data.append({
+                    "Date": date,
+                    "Time": time_slot,
+                    "Name": customer,
+                    "Type": type_,
+                    "WO": wo_number,
+                    "Address": address,
+                    "Notes": "",
+                    "Assignment": contractor
+                })
+
+            i += 1
 
     if not data:
         raise ValueError("No valid WO entries found in pasted text.")
 
     df = pd.DataFrame(data)
-    df["Notes"] = ""
-
-    # Match Excel format: A-H
     df = df[["Date", "Time", "Name", "Type", "WO", "Address", "Notes", "Assignment"]]
 
     temp_path = os.path.join(tempfile.gettempdir(), "formatted_assignments.xlsx")
     df.to_excel(temp_path, index=False)
     return temp_path
+
 
 def create_gui():
     app = TkinterDnD.Tk()
