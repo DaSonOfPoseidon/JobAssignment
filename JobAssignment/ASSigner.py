@@ -308,23 +308,76 @@ def process_workorders(file_path):
         show_first_jobs(first_jobs)
 
 def reformat_contractor_text(raw_text):
-    import re
-    from datetime import timedelta
-
     lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
     data = []
 
-    def detect_tgs_format(lines):
-        # Check if we consistently see a WO line every ~9 lines
-        wo_count = sum(1 for line in lines if re.match(r'^WO\s*\d+$', line, re.IGNORECASE))
-        return wo_count >= len(lines) // 10  # ~1 WO per 9 lines
+    def is_date(line):
+        try:
+            datetime.strptime(line, "%m/%d/%Y")
+            return True
+        except:
+            return False
 
-    is_tgs_format = detect_tgs_format(lines)
+    def is_short_date(line):
+        try:
+            datetime.strptime(line, "%d-%b")
+            return True
+        except:
+            return False
 
-    if is_tgs_format:
-        # === TGS VERTICAL FORMAT ===
-        print("📄 Detected TGS (vertical 9-line) job format.")
-        # Prompt for date
+    def detect_format(lines):
+        if any(re.match(r"^\d{1,2}-[A-Za-z]{3}$", line) for line in lines):
+            return "tabular"
+        wo_lines = sum(1 for line in lines if re.match(r'^WO\s*\d+', line, re.IGNORECASE))
+        if wo_lines >= len(lines) // 10 and any(re.match(r'^\d{1,2}:\d{2}\s?(AM|PM)$', line, re.IGNORECASE) for line in lines[:10]):
+            return "tgs"
+        if any(is_date(line) for line in lines[:10]) and any(re.match(r'\d{1,2}(am|pm)', line.lower()) for line in lines):
+            return "grouped"
+        return "legacy"
+
+    fmt = detect_format(lines)
+
+    if fmt == "tabular":
+        print("📄 Detected TGS tabular format.")
+        i = 0
+        while i + 10 < len(lines):
+            date_str = lines[i]
+            try:
+                job_date = datetime.strptime(date_str, "%d-%b").replace(year=datetime.today().year).date()
+            except:
+                i += 1
+                continue
+
+            time_raw = lines[i + 1]
+            type_ = lines[i + 2]
+            name = lines[i + 3]
+            # skip account at i + 4
+            street = lines[i + 5]
+            city = lines[i + 6]
+            zip_ = lines[i + 7]
+            # skip state at i + 8
+            wo_match = re.search(r'\d+', lines[i + 9])
+            tech = lines[i + 10].title()
+
+            if not wo_match:
+                i += 11
+                continue
+
+            address = f"{street}, {city} {zip_}"
+            data.append({
+                "Date": job_date,
+                "Time": time_raw,
+                "Name": name,
+                "Type": type_,
+                "WO": wo_match.group(),
+                "Address": address,
+                "Notes": "",
+                "Assignment": tech
+            })
+            i += 11
+
+    elif fmt == "tgs":
+        print("📄 Detected TGS (vertical 9-line) format.")
         while True:
             date_input = input("Enter the date for these jobs (YYYY-MM-DD, 'today', or 'tomorrow'): ").strip().lower()
             if date_input == "today":
@@ -346,35 +399,70 @@ def reformat_contractor_text(raw_text):
             time_raw = block[0]
             type_ = block[1]
             name = block[2]
-            account = block[3]
             address1 = block[4]
             city = block[5]
             zip_ = block[6]
             wo_match = re.match(r'^WO\s*(\d+)', block[7], re.IGNORECASE)
             tech = block[8].title()
-
             if tech.lower() == "cancelled" or not wo_match:
                 i += 9
                 continue
-
             wo = wo_match.group(1)
             address = f"{address1}, {city} {zip_}"
-
             data.append({
-                "Date": job_date,
-                "Time": time_raw,
-                "Name": name,
-                "Type": type_,
-                "WO": wo,
-                "Address": address,
-                "Notes": "",
-                "Assignment": tech
+                "Date": job_date, "Time": time_raw, "Name": name, "Type": type_, "WO": wo,
+                "Address": address, "Notes": "", "Assignment": tech
             })
             i += 9
 
+    elif fmt == "grouped":
+        print("📄 Detected grouped format (Tech → Date → Time → Jobs)")
+        i = 0
+        current_tech = None
+        current_date = None
+        current_time = None
+        while i < len(lines):
+            line = lines[i]
+            if re.match(r"^[A-Za-z]+\s*[A-Za-z]*$", line) and not is_date(line):
+                current_tech = line.title()
+                i += 1
+                continue
+            if is_date(line):
+                current_date = datetime.strptime(line, "%m/%d/%Y").date()
+                i += 1
+                continue
+            if re.match(r"^\d{1,2}(?::\d{2})?\s?(AM|PM)$", line, re.IGNORECASE):
+                current_time = line
+                i += 1
+                continue
+            if "WO" in line.upper():
+                wo_match = re.search(r'WO\s*(\d+)', line, re.IGNORECASE)
+                if not (current_tech and current_date and current_time and wo_match):
+                    i += 1
+                    continue
+                parts = re.split(r'[-_]', line)
+                parts = [p.strip() for p in parts if p.strip()]
+                if len(parts) < 4:
+                    i += 1
+                    continue
+                name = parts[0]
+                type_ = ""
+                address = ""
+                for p in parts:
+                    if any(k in p.lower() for k in ["fiber", "connectorized", "install", "service"]):
+                        type_ = p
+                    elif "mo" in p.lower() and any(char.isdigit() for char in p):
+                        address = p
+                data.append({
+                    "Date": current_date, "Time": current_time, "Name": name,
+                    "Type": type_, "WO": wo_match.group(1), "Address": address,
+                    "Notes": "", "Assignment": current_tech
+                })
+            i += 1
+
     else:
-        # === ORIGINAL FREEFORM FORMAT ===
-        print("📄 Detected standard freeform contractor schedule format.")
+        print("📄 Detected legacy freeform contractor format.")
+                # === ORIGINAL FREEFORM FORMAT ===
         contractor = None
         date = None
         time_slot = None
@@ -481,7 +569,6 @@ def reformat_contractor_text(raw_text):
 
     df = pd.DataFrame(data)
     df = df[["Date", "Time", "Name", "Type", "WO", "Address", "Notes", "Assignment"]]
-
     temp_path = os.path.join(tempfile.gettempdir(), "formatted_assignments.xlsx")
     df.to_excel(temp_path, index=False)
     return temp_path
