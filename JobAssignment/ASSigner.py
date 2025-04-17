@@ -8,6 +8,7 @@ from collections import defaultdict
 
 import pandas as pd
 import tkinter as tk
+from tkinter import ttk
 from tkinterdnd2 import DND_FILES, TkinterDnD
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -30,6 +31,15 @@ COLUMN_ADDRESS = 5
 COLUMN_DROPDOWN = 7
 
 BASE_URL = "http://inside.sockettelecom.com/workorders/view.php?nCount="
+
+CONTRACTOR_LABELS = {
+    "(none)": None,
+    "SubT": "Subterraneus Installs",
+    "TGS": "TGS Fiber",
+    "Tex-Star": "Tex-Star Communications",
+    "Pifer": "Pifer Quality Communications",
+    "advanced": "Advanced Electric",
+}
 
 NAME_CORRECTIONS = {
     "jeff t": "Jeffery Thornton",
@@ -190,6 +200,37 @@ def process_workorders(file_path):
             print(f"❌ Failed to verify correct WO after 3 attempts — skipping WO #{wo_number}")
             continue
 
+        # ✅ CHECK & ASSIGN CONTRACTOR COMPANY
+        desired_contractor_label = SELECTED_CONTRACTOR.get()
+        desired_contractor_full = CONTRACTOR_LABELS.get(desired_contractor_label)
+
+        if desired_contractor_full:
+            current_contractor = get_contractor_assignments(driver)
+            if current_contractor != desired_contractor_full:
+                try:
+                    remove_links = driver.find_elements(By.XPATH, "//a[contains(@onclick, 'removeContractor')]")
+                    for link in remove_links:
+                        row_text = link.find_element(By.XPATH, "./ancestor::tr/td[1]/b").text
+                        print(f"🧹 Removing incorrect contractor '{row_text}' on WO #{wo_number}")
+                        link.click()
+                        time.sleep(1)
+                except Exception as e:
+                    print(f"❌ Could not remove existing contractor on WO #{wo_number}: {e}")
+
+                try:
+                    WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "ContractorID")))
+                    contractor_dropdown = Select(driver.find_element(By.ID, "ContractorID"))
+                    contractor_dropdown.select_by_visible_text(desired_contractor_full)
+
+                    role_dropdown = Select(driver.find_element(By.ID, "ContractorType"))
+                    role_dropdown.select_by_visible_text("Primary")
+
+                    assign_button = driver.find_element(By.XPATH, "//input[@type='button' and @value='Assign']")
+                    assign_button.click()
+                    print(f"🏷️ Assigned contractor '{desired_contractor_full}' to WO #{wo_number}")
+                except Exception as e:
+                    print(f"❌ Failed to assign contractor on WO #{wo_number}: {e}")
+
         try:
             dropdown = WebDriverWait(driver, 60).until(
                 EC.presence_of_element_located((By.ID, "AssignEmpID"))
@@ -266,11 +307,11 @@ def process_workorders(file_path):
     print(f"\n✅ Done processing work orders.")
     print(f"🗂️ Output saved to: {log_path}")
 
+    # === FIRST JOB SUMMARY
     first_jobs = defaultdict(list)
     if not filtered_df.empty:
         grouped = filtered_df.copy()
 
-        # More forgiving time parsing
         def parse_flexible_time(t):
             t = t.strip().lower().replace('.', '')
             formats = ("%I:%M %p", "%I %p", "%I%p", "%H:%M", "%H:%M:%S")
@@ -282,14 +323,11 @@ def process_workorders(file_path):
             return pd.NaT
 
         grouped['TimeParsed'] = grouped['Time'].apply(lambda x: parse_flexible_time(str(x)))
-
-        # Debug: show times that failed to parse
         failed_times = grouped[grouped['TimeParsed'].isna()]
         if not failed_times.empty:
             print("\n⚠️ Could not parse the following time values:")
             print(failed_times[['Time']])
 
-        # Drop rows that don't have all required fields
         grouped = grouped.dropna(subset=['TimeParsed', 'Dropdown', 'Name', 'Type', 'Address', 'WO'])
 
         for date, group in grouped.groupby(grouped['Date'].dt.date):
@@ -306,6 +344,62 @@ def process_workorders(file_path):
     want_first = input("\nOutput First Jobs? (y/n): ").strip().lower()
     if want_first == 'y':
         show_first_jobs(first_jobs)
+
+def assign_contractor(driver, wo_number, desired_contractor_full):
+    try:
+        current_contractor = get_contractor_assignments(driver)
+        if current_contractor != desired_contractor_full:
+            try:
+                # Ensure ContractorList is visible (toggle style)
+                driver.execute_script("""
+                    const list = document.getElementById('ContractorList');
+                    if (list) { list.classList.remove('hidden'); list.style.display = 'block'; }
+                """)
+
+                remove_links = driver.find_elements(By.XPATH, "//a[contains(@onclick, 'removeContractor')]")
+                for link in remove_links:
+                    row_text = link.find_element(By.XPATH, "./ancestor::tr/td[1]/b").text
+                    print(f"🧹 Removing incorrect contractor '{row_text}' on WO #{wo_number}")
+                    driver.execute_script("arguments[0].scrollIntoView(true);", link)
+                    time.sleep(0.5)
+                    driver.execute_script("arguments[0].click();", link)
+                    time.sleep(1)
+            except Exception as e:
+                print(f"❌ Could not remove existing contractor on WO #{wo_number}: {e}")
+
+        # Assign new contractor
+        try:
+            driver.execute_script("""
+                const addArea = document.getElementById('ContractorAddArea');
+                if (addArea) { addArea.classList.remove('hidden'); addArea.style.display = 'block'; }
+            """)
+
+            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "ContractorID")))
+            contractor_dropdown = Select(driver.find_element(By.ID, "ContractorID"))
+            contractor_dropdown.select_by_visible_text(desired_contractor_full)
+
+            role_dropdown = Select(driver.find_element(By.ID, "ContractorType"))
+            role_dropdown.select_by_visible_text("Primary")
+
+            try:
+                file_list_elem = driver.find_element(By.ID, "FileList")
+                driver.execute_script("arguments[0].style.display = 'none';", file_list_elem)
+            except:
+                pass
+
+            assign_button = driver.find_element(By.XPATH, "//input[@type='button' and @value='Assign']")
+            driver.execute_script("arguments[0].scrollIntoView(true);", assign_button)
+            time.sleep(0.5)
+            driver.execute_script("arguments[0].click();", assign_button)
+            print(f"🏷️ Assigned contractor '{desired_contractor_full}' to WO #{wo_number}")
+        except Exception as e:
+            print(f"❌ Failed to assign contractor on WO #{wo_number}: {e}")
+
+    except Exception as e:
+        print(f"❌ Contractor assignment process failed for WO #{wo_number}: {e}")
+
+
+
 
 def reformat_contractor_text(raw_text):
     lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
@@ -573,6 +667,24 @@ def reformat_contractor_text(raw_text):
     df.to_excel(temp_path, index=False)
     return temp_path
 
+def get_contractor_assignments(driver):
+    try:
+        WebDriverWait(driver, 5).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "contractorsection"))
+        )
+        section_elem = driver.find_element(By.CLASS_NAME, "contractorsection")
+        section_text = section_elem.text.strip()
+        lines = section_text.splitlines()
+        for line in lines:
+            if " - (Primary" in line:
+                return line.split(" - ")[0].strip()
+        for line in lines:
+            if "assigned to this work order" not in line and "Contractors" not in line:
+                return line.split(" - ")[0].strip()
+        return "Unknown"
+    except Exception as e:
+        print(f"❌ Could not find contractor name: {e}")
+        return "Unknown"
 
 def create_gui():
     app = TkinterDnD.Tk()
@@ -584,6 +696,17 @@ def create_gui():
 
     textbox = tk.Text(app, height=10, wrap="word")
     textbox.pack(padx=10, pady=(0, 5), fill="both", expand=True)
+    
+    global SELECTED_CONTRACTOR
+    SELECTED_CONTRACTOR = tk.StringVar(value="(none)")
+    
+    dropdown_frame = tk.Frame(app)
+    dropdown_frame.pack()
+    tk.Label(dropdown_frame, text="Contractor Company:").pack(side="left", padx=5)
+    dropdown_menu = ttk.Combobox(dropdown_frame, textvariable=SELECTED_CONTRACTOR, state="readonly")
+    dropdown_menu["values"] = list(CONTRACTOR_LABELS.keys())
+    dropdown_menu.current(0)
+    dropdown_menu.pack(side="left")
 
     def drop(event):
         file_path = event.data.strip('{}')
