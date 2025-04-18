@@ -288,18 +288,41 @@ def process_workorders(file_path):
                 print(f"❌ No dropdown match for '{dropdown_value}' — skipping WO #{wo_number}")
                 continue
 
+            # Check and remove other assignments first
             assignments_div = WebDriverWait(driver, 5).until(
                 EC.presence_of_element_located((By.ID, "AssignmentsList"))
             )
-            assigned_names = assignments_div.text.lower()
+            assigned_rows = assignments_div.find_elements(By.XPATH, ".//tr")
 
-            if matched_option.lower() in assigned_names:
-                log(f"🟡 WO #{wo_number}: '{matched_option}' is already assigned — skipping.")
+            already_assigned = False
+
+            for row in assigned_rows:
+                try:
+                    row_text = row.text.strip().lower()
+                    if matched_option.lower() in row_text:
+                        already_assigned = True
+                    else:
+                        # Remove incorrect assignment
+                        remove_link = row.find_element(By.XPATH, ".//a[contains(@onclick, 'removeWorkOrderAssignment')]")
+                        driver.execute_script("arguments[0].scrollIntoView(true);", remove_link)
+                        driver.execute_script("arguments[0].click();", remove_link)
+
+                        # Confirm alert
+                        try:
+                            alert = WebDriverWait(driver, 2).until(EC.alert_is_present())
+                            alert_text = alert.text
+                            print(f"⚠️ Alert: {alert_text}")
+                            alert.accept()
+                            print("✅ Removed incorrect tech assignment.")
+                        except:
+                            pass
+                except Exception as e:
+                    print(f"⚠️ Skipping row removal due to error: {e}")
+
+            if already_assigned:
+                log(f"🟡 WO #{wo_number}: '{matched_option}' already assigned.")
                 continue
-            elif assigned_names:
-                log(f"🟢 Tech assigned: '{matched_option}'")
-            else:
-                log(f"🟢 Tech assigned: '{matched_option}'")
+
 
             select.select_by_visible_text(matched_option)
             add_button = WebDriverWait(driver, 60).until(
