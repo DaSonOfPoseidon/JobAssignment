@@ -24,7 +24,7 @@ IF NOT EXIST "embedded_python\Scripts\pip.exe" (
 REM === INSTALL MISSING DEPENDENCIES ONLY ===
 echo Checking Python packages...
 SETLOCAL ENABLEDELAYEDEXPANSION
-SET PACKAGES=pandas selenium openpyxl tkinterdnd2
+SET PACKAGES=pandas selenium openpyxl tkinterdnd2 tkcalendar
 FOR %%P IN (%PACKAGES%) DO (
     embedded_python\python.exe -c "import %%P" 2>NUL
     IF ERRORLEVEL 1 (
