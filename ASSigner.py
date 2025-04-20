@@ -6,9 +6,13 @@ import tempfile
 import pickle
 from datetime import datetime, timedelta
 from collections import defaultdict
-from dotenv import load_dotenv
+from tkinter import messagebox
+from dotenv import load_dotenv, set_key
 import pandas as pd
+from threading import Thread
 import tkinter as tk
+from tkcalendar import DateEntry
+from tkinter import simpledialog
 from tkinter import ttk
 from tkinterdnd2 import DND_FILES, TkinterDnD
 from selenium import webdriver
@@ -16,16 +20,14 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import Select, WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../embedded_python/lib")))
 
 # === CONFIGURATION ===
-SHOW_ALL_OUTPUT_IN_CONSOLE = False
-CHROMEDRIVER_PATH = os.path.join(os.path.dirname(__file__), "chromedriver.exe")
-LOG_FOLDER = os.path.join(os.path.dirname(__file__), "logs")
+SHOW_ALL_OUTPUT_IN_CONSOLE = True
+CHROMEDRIVER_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "chromedriver.exe"))
+LOG_FOLDER = os.path.join(os.path.dirname(__file__), "..", "logs")
 os.makedirs(LOG_FOLDER, exist_ok=True)
-
 load_dotenv(dotenv_path=".env")
-USERNAME = os.getenv("UNITY_USER")
-PASSWORD = os.getenv("PASSWORD")
 
 COLUMN_DATE = 0
 COLUMN_TIME = 1
@@ -64,12 +66,80 @@ NAME_CORRECTIONS = {
 log_lines = []
 
 def log(message):
-    global log_lines
     log_lines.append(message)
-    if SHOW_ALL_OUTPUT_IN_CONSOLE and (message.startswith("🟡") or message.startswith("🟢")):
+    if SHOW_ALL_OUTPUT_IN_CONSOLE :
         print(message)
-    elif message.startswith("❌") or message.startswith("✅"):
-        print(message)
+
+def gui_log(message):
+    try:
+        if HEADLESS_MODE.get() and 'log_output_text' in globals():
+            timestamp = datetime.now().strftime("[%H:%M:%S] ")
+            new_message = f"{timestamp}{message}"
+            log_output_text.config(state="normal")
+            log_output_text.insert(tk.END, f"{new_message}\n")
+            log_output_text.see(tk.END)
+            log_output_text.config(state="disabled")
+            log(new_message)
+    except Exception as e:
+        log(f"⚠️ Failed to update GUI log: {e}")
+
+def ask_date_range(dates):
+    top = tk.Toplevel()
+    top.title("Select Date Range")
+    top.geometry("300x150")
+    tk.Label(top, text="Start Date:").pack(pady=(10, 0))
+    
+    start = DateEntry(top, mindate=min(dates), maxdate=max(dates))
+    start.pack()
+
+    tk.Label(top, text="End Date:").pack(pady=(10, 0))
+    end = DateEntry(top, mindate=min(dates), maxdate=max(dates))
+    end.pack()
+
+    selected = {}
+
+    def submit():
+        selected['start'] = start.get_date()
+        selected['end'] = end.get_date()
+        top.destroy()
+
+    tk.Button(top, text="OK", command=submit).pack(pady=10)
+    top.grab_set()
+    top.wait_window()
+
+    return selected.get('start'), selected.get('end')
+
+def ask_single_date(available_dates=None, title="Select Job Date"):
+    top = tk.Toplevel()
+    top.title(title)
+    top.geometry("250x120")
+
+    tk.Label(top, text="Job Date:").pack(pady=(10, 0))
+
+    kwargs = {}
+    if available_dates:
+        available_dates = sorted(d for d in available_dates if d)  # remove None
+        kwargs["mindate"] = min(available_dates)
+        kwargs["maxdate"] = max(available_dates)
+        default_date = available_dates[0]
+    else:
+        default_date = datetime.today().date()
+
+    cal = DateEntry(top, width=12, background='darkblue', foreground='white', borderwidth=2, **kwargs)
+    cal.set_date(default_date)
+    cal.pack(pady=5)
+
+    selected = {}
+
+    def submit():
+        selected["date"] = cal.get_date()
+        top.destroy()
+
+    tk.Button(top, text="OK", command=submit).pack()
+    top.grab_set()
+    top.wait_window()
+
+    return selected.get("date")
 
 def flexible_date_parser(date_str):
     try:
@@ -82,6 +152,53 @@ def format_time_str(t):
         return datetime.strptime(t.strip(), "%I:%M %p").strftime("%-I%p").lower()
     except:
         return t.strip()
+
+def login_failed(driver):
+    try:
+        return (
+            "login.php" in driver.current_url
+            or "Username" in driver.page_source
+            or "Invalid username or password" in driver.page_source
+        )
+    except Exception:
+        return True  # if we can't read the page, assume failure
+
+def check_env_or_prompt_login(log):
+    username = os.getenv("UNITY_USER")
+    password = os.getenv("PASSWORD")
+
+    if username and password:
+        log("🔐 Loaded stored credentials.")
+        return username, password
+
+    while True:
+        username, password = prompt_for_credentials()
+        if not username or not password:
+            messagebox.showerror("Login Cancelled", "Login is required to continue.")
+            return None, None
+
+        # Do NOT try logging in here (add ~15 sec delay in most use cases) — just trust them until used (nothing will break)
+        save_env_credentials(username, password)
+        log("✅ Credentials captured and saved to .env.")
+        return username, password
+
+def prompt_for_credentials():
+    login_window = Tk()
+    login_window.withdraw()
+
+    USERNAME = simpledialog.askstring("Login", "Enter your USERNAME:", parent=login_window)
+    PASSWORD = simpledialog.askstring("Login", "Enter your PASSWORD:", parent=login_window, show="*")
+
+    login_window.destroy()
+    return USERNAME, PASSWORD
+
+def save_env_credentials(USERNAME, PASSWORD):
+    dotenv_path = ".env"
+    if not os.path.exists(dotenv_path):
+        with open(dotenv_path, "w") as f:
+            f.write("")
+    set_key(dotenv_path, "UNITY_USER", USERNAME)
+    set_key(dotenv_path, "PASSWORD", PASSWORD)
 
 def show_first_jobs(first_jobs):
     from tkinter import Toplevel, Scrollbar, Text, RIGHT, Y, END, Button
@@ -125,24 +242,16 @@ def process_jobs_from_list(job_list):
     df = df.dropna(subset=['Date', 'WO'])
 
     unique_dates = sorted(df['Date'].dropna().dt.date.unique())
-    print("\nAvailable Dates:")
-    for d in unique_dates:
-        print(f" - {d}")
-
-    start_input = input("\nEnter start date (YYYY-MM-DD): ")
-    end_input = input("Enter end date (YYYY-MM-DD): ")
-    try:
-        start_date = datetime.strptime(start_input, "%Y-%m-%d").date()
-        end_date = datetime.strptime(end_input, "%Y-%m-%d").date()
-    except ValueError:
-        print("Invalid date format. Use YYYY-MM-DD.")
-        input("\nPress Enter to close...")
+    start_date, end_date = ask_date_range(unique_dates)
+    if not start_date or not end_date:
+        gui_log("❌ No date range selected.")
         return
+
 
     filtered_df = df[(df['Date'].dt.date >= start_date) & (df['Date'].dt.date <= end_date)]
 
     if filtered_df.empty:
-        print("No matching jobs found for that date range.")
+        gui_log("No matching jobs found for that date range.")
         input("\nPress Enter to close...")
         return
 
@@ -150,12 +259,12 @@ def process_jobs_from_list(job_list):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
         temp_path = tmp.name
         filtered_df.to_excel(temp_path, index=False)
-        print(f"\n📄 Temporary Excel created: {temp_path}")
+        log(f"\n📄 Temporary Excel created: {temp_path}")
 
     process_workorders(temp_path)
 
 def process_workorders(file_path):
-    print(f"\nProcessing file: {file_path}")
+    gui_log(f"\nProcessing file: {file_path}")
     df_raw = pd.read_excel(file_path)
 
     df = pd.DataFrame()
@@ -169,29 +278,20 @@ def process_workorders(file_path):
 
     df = df.dropna(subset=['Date', 'WO', 'Dropdown'])
 
-    unique_dates = sorted(df['Date'].dt.date.unique())
-    print("\nAvailable Dates:")
-    for d in unique_dates:
-        print(f" - {d}")
-
-    start_input = input("\nEnter start date (YYYY-MM-DD): ")
-    end_input = input("Enter end date (YYYY-MM-DD): ")
-    try:
-        start_date = datetime.strptime(start_input, "%Y-%m-%d").date()
-        end_date = datetime.strptime(end_input, "%Y-%m-%d").date()
-    except ValueError:
-        print("Invalid date format. Use YYYY-MM-DD.")
-        input("\nPress Enter to close...")
+    unique_dates = sorted(df['Date'].dropna().dt.date.unique())
+    start_date, end_date = ask_date_range(unique_dates)
+    if not start_date or not end_date:
+        gui_log("❌ No date range selected.")
         return
 
     filtered_df = df[(df['Date'].dt.date >= start_date) & (df['Date'].dt.date <= end_date)]
 
     if filtered_df.empty:
-        print("No matching jobs found for that date range.")
+        gui_log("No matching jobs found for that date range.")
         input("\nPress Enter to close...")
         return
 
-    print(f"\nProcessing {len(filtered_df)} work orders...")
+    gui_log(f"\nProcessing {len(filtered_df)} work orders...")
     options = webdriver.ChromeOptions()
     if is_headless():
         options.add_argument("--no-sandbox")
@@ -219,7 +319,7 @@ def process_workorders(file_path):
             wo_number = str(int(raw_wo))
         except (ValueError, TypeError):
             excel_row = index + 2
-            print(f"❌ Invalid WO number '{raw_wo}' on spreadsheet line {excel_row}.")
+            gui_log(f"❌ Invalid WO number '{raw_wo}' on spreadsheet line {excel_row}.")
             continue
 
         url = BASE_URL + wo_number
@@ -250,7 +350,7 @@ def process_workorders(file_path):
             time.sleep(5)
 
         if not matched_wo:
-            print(f"❌ Failed to verify correct WO after 3 attempts — skipping WO #{wo_number}")
+            gui_log(f"❌ Failed to verify correct WO after 3 attempts — skipping WO #{wo_number}")
             continue
 
         desired_contractor_label = SELECTED_CONTRACTOR.get()
@@ -268,7 +368,7 @@ def process_workorders(file_path):
 
             parts = dropdown_value.strip().lower().split()
             if not parts:
-                print(f"❌ No valid name format for WO #{wo_number} — skipping.")
+                gui_log(f"❌ No valid name format for WO #{wo_number} — skipping.")
                 continue
 
             first_name = parts[0]
@@ -298,11 +398,11 @@ def process_workorders(file_path):
                 if len(potential_matches) == 1:
                     matched_option = potential_matches[0]
                 elif len(potential_matches) > 1:
-                    print(f"❌ Ambiguous first name '{first_name}' — found multiple matches: {', '.join(potential_matches)}")
+                    gui_log(f"❌ Ambiguous first name '{first_name}' — found multiple matches: {', '.join(potential_matches)}")
                     continue
 
             if not matched_option:
-                print(f"❌ No dropdown match for '{dropdown_value}' — skipping WO #{wo_number}")
+                gui_log(f"❌ No dropdown match for '{dropdown_value}' — skipping WO #{wo_number}")
                 continue
 
             # Check and remove other assignments first
@@ -328,13 +428,13 @@ def process_workorders(file_path):
                         try:
                             alert = WebDriverWait(driver, 2).until(EC.alert_is_present())
                             alert_text = alert.text
-                            print(f"⚠️ Alert: {alert_text}")
+                            log(f"⚠️ Alert: {alert_text}")
                             alert.accept()
-                            print("✅ Removed incorrect tech assignment.")
+                            log("✅ Removed incorrect tech assignment.")
                         except:
                             pass
                 except Exception as e:
-                    print(f"⚠️ Skipping row removal due to error: {e}")
+                    log(f"⚠️ Skipping row removal due to error: {e}")
 
             if already_assigned:
                 log(f"🟡 WO #{wo_number}: '{matched_option}' already assigned.")
@@ -348,7 +448,7 @@ def process_workorders(file_path):
             add_button.click()
 
         except Exception as e:
-            print(f"❌ Error on WO #{wo_number}: {e}")
+            gui_log(f"❌ Error on WO #{wo_number}: {e}")
 
     now = datetime.now()
     filename = f"Output{now.strftime('%m%d%H%M')}.txt"
@@ -356,8 +456,8 @@ def process_workorders(file_path):
     with open(log_path, "w", encoding="utf-8") as f:
         f.write("\n".join(log_lines))
 
-    print(f"\n✅ Done processing work orders.")
-    print(f"🗂️ Output saved to: {log_path}")
+    gui_log(f"\n✅ Done processing work orders.")
+    gui_log(f"🗂️ Output saved to: {log_path}")
 
     # === FIRST JOB SUMMARY
     first_jobs = defaultdict(list)
@@ -377,8 +477,8 @@ def process_workorders(file_path):
         grouped['TimeParsed'] = grouped['Time'].apply(lambda x: parse_flexible_time(str(x)))
         failed_times = grouped[grouped['TimeParsed'].isna()]
         if not failed_times.empty:
-            print("\n⚠️ Could not parse the following time values:")
-            print(failed_times[['Time']])
+            log("\n⚠️ Could not parse the following time values:")
+            log(failed_times[['Time']])
 
         grouped = grouped.dropna(subset=['TimeParsed', 'Dropdown', 'Name', 'Type', 'Address', 'WO'])
 
@@ -398,7 +498,7 @@ def process_workorders(file_path):
         show_first_jobs(first_jobs)
 
 def assign_jobs_from_dataframe(df):
-    print(f"\nProcessing {len(df)} work orders from pasted text...")
+    gui_log(f"\nProcessing {len(df)} work orders from pasted text...")
 
     options = webdriver.ChromeOptions()
     if is_headless():
@@ -429,7 +529,7 @@ def assign_jobs_from_dataframe(df):
         try:
             wo_number = str(int(raw_wo))
         except (ValueError, TypeError):
-            print(f"❌ Invalid WO number '{raw_wo}' on line {index + 2}.")
+            gui_log(f"❌ Invalid WO number '{raw_wo}' on line {index + 2}.")
             continue
 
         url = BASE_URL + wo_number
@@ -454,7 +554,7 @@ def assign_jobs_from_dataframe(df):
                 time.sleep(5)
 
         if not matched_wo:
-            print(f"❌ Failed to verify WO #{wo_number}. Skipping.")
+            gui_log(f"❌ Failed to verify WO #{wo_number}. Skipping.")
             continue
 
         desired_contractor_label = SELECTED_CONTRACTOR.get()
@@ -493,7 +593,7 @@ def assign_jobs_from_dataframe(df):
                     matched_option = matches[0]
 
             if not matched_option:
-                print(f"❌ No dropdown match for '{dropdown_value}' — skipping WO #{wo_number}")
+                gui_log(f"❌ No dropdown match for '{dropdown_value}' — skipping WO #{wo_number}")
                 continue
 
             assignments_div = WebDriverWait(driver, 5).until(
@@ -510,10 +610,11 @@ def assign_jobs_from_dataframe(df):
                 EC.element_to_be_clickable((By.XPATH, "//button[contains(@class, 'Socket')]"))
             )
             add_button.click()
-            log(f"🟢 Assigned tech: '{matched_option}' to WO #{wo_number}")
+            gui_log(f"WO {wo_number} - Assigned to {matched_option} with {desired_contractor_full}")
+
 
         except Exception as e:
-            print(f"❌ Error assigning WO #{wo_number}: {e}")
+            gui_log(f"❌ Error assigning WO #{wo_number}: {e}")
 
 def assign_contractor(driver, wo_number, desired_contractor_full):
     try:
@@ -525,16 +626,16 @@ def assign_contractor(driver, wo_number, desired_contractor_full):
             )
             time.sleep(0.5)  # let modal settle
         except Exception as e:
-            print(f"❌ Could not trigger assignContractor JS on WO #{wo_number}: {e}")
+            gui_log(f"Could not trigger assignContractor JS on WO #{wo_number}: {e}")
             return
 
         # ✅ Get current contractor assignment from the page
         current_contractor = get_contractor_assignments(driver)
         if current_contractor == desired_contractor_full:
-            print(f"✅ Contractor '{current_contractor}' already assigned to WO #{wo_number}")
+            log(f"✅ Contractor '{current_contractor}' already assigned to WO #{wo_number}")
             return  # No change needed
 
-        print(f"🧹 Reassigning from '{current_contractor}' → '{desired_contractor_full}'")
+        log(f"🧹 Reassigning from '{current_contractor}' → '{desired_contractor_full}'")
 
         # 🧽 Remove the currently assigned contractor (if any)
         try:
@@ -544,7 +645,7 @@ def assign_contractor(driver, wo_number, desired_contractor_full):
                 driver.execute_script("arguments[0].click();", link)
                 time.sleep(1)
         except Exception as e:
-            print(f"❌ Could not remove existing contractor on WO #{wo_number}: {e}")
+            gui_log(f"❌ Could not remove existing contractor on WO #{wo_number}: {e}")
 
         # 🏷️ Assign the new contractor
         try:
@@ -565,12 +666,12 @@ def assign_contractor(driver, wo_number, desired_contractor_full):
             assign_button = driver.find_element(By.XPATH, "//input[@type='button' and @value='Assign']")
             driver.execute_script("arguments[0].click();", assign_button)
 
-            print(f"🏷️ Assigned contractor '{desired_contractor_full}' to WO #{wo_number}")
+            log(f"🏷️ Assigned contractor '{desired_contractor_full}' to WO #{wo_number}")
         except Exception as e:
-            print(f"❌ Failed to assign contractor on WO #{wo_number}: {e}")
+            log(f"❌ Failed to assign contractor on WO #{wo_number}: {e}")
 
     except Exception as e:
-        print(f"❌ Contractor assignment process failed for WO #{wo_number}: {e}")
+        gui_log(f"❌ Contractor assignment process failed for WO #{wo_number}: {e}")
 
 def reformat_contractor_text(text):
     lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
@@ -732,12 +833,13 @@ def reformat_contractor_text(text):
                         
     elif is_informal:
         # === Single-Day Blocked Format (hyphen or underscore separated) ===
-        date_input = input("Enter the job date for this schedule (YYYY-MM-DD): ").strip()
-        try:
-            current_date = datetime.strptime(date_input, "%Y-%m-%d").strftime("%Y-%m-%d")
-        except ValueError:
-            print("❌ Invalid date format. Skipping parsing.")
+        parsed_dates = [flexible_date_parser(line) for line in lines if re.match(r"\d{1,2}/\d{1,2}/\d{4}", line)]
+        job_date = ask_single_date(parsed_dates)
+        if not job_date:
+            print("❌ No job date selected. Skipping parsing.")
             return []
+
+        current_date = job_date.strftime("%Y-%m-%d")
 
         current_time = ""
         pending_job = None
@@ -818,14 +920,14 @@ def get_contractor_assignments(driver):
             text = elem.text.strip()
             if " - (Primary" in text:
                 contractor = text.split(" - ")[0].strip()
-                #print(f"🔍 Detected contractor: {contractor}")
+                #log(f"🔍 Detected contractor: {contractor}")
                 return contractor
 
-        print("⚠️ No 'Primary' contractor detected.")
+        log("⚠️ No 'Primary' contractor detected.")
         return "Unknown"
         
     except Exception as e:
-        print(f"❌ Could not find contractor name: {e}")
+        gui_log(f"❌ Could not find contractor name: {e}")
         return "Unknown"
 
 def assign_contractor_company(driver, wo_number, contractor_name, contractor_id):
@@ -853,27 +955,27 @@ def assign_contractor_company(driver, wo_number, contractor_name, contractor_id)
 
         # === Compare with selected contractor ===
         if assigned_contractor and assigned_contractor.lower() == contractor_name.lower():
-            #print(f"✅ Contractor already assigned on WO #{wo_number}: {assigned_contractor}")
+            log(f"✅ Contractor already assigned on WO #{wo_number}: {assigned_contractor}")
             return
 
         # === Attempt to remove incorrect contractor ===
-        print(f"🧹 Removing incorrect contractor '{assigned_contractor}' on WO #{wo_number}")
+        log(f"🧹 Removing incorrect contractor '{assigned_contractor}' on WO #{wo_number}")
         try:
             remove_link = section_elem.find_element(By.LINK_TEXT, "Remove")
             driver.execute_script("arguments[0].click();", remove_link)
             time.sleep(1.5)
         except Exception as e:
-            print(f"❌ Could not remove existing contractor on WO #{wo_number}: {e}")
+            log(f"❌ Could not remove existing contractor on WO #{wo_number}: {e}")
 
         # === Assign correct contractor ===
         contractor_select = Select(driver.find_element(By.ID, "ContractorID"))
         contractor_select.select_by_value(str(contractor_id))
         driver.execute_script("assignContractor('{}');".format(wo_number))
         time.sleep(1.5)
-        print(f"✅ Assigned contractor '{contractor_name}' to WO #{wo_number}")
+        log(f"✅ Assigned contractor '{contractor_name}' to WO #{wo_number}")
 
     except Exception as e:
-        print(f"❌ Failed to assign contractor on WO #{wo_number}: {e}")
+        log(f"❌ Failed to assign contractor on WO #{wo_number}: {e}")
 
 def is_headless():
     try:
@@ -881,6 +983,84 @@ def is_headless():
     except:
         return False
 
+def save_cookies(driver, filename="cookies.pkl"):
+    with open(filename, "wb") as f:
+        pickle.dump(driver.get_cookies(), f)
+
+def load_cookies(driver, filename="cookies.pkl"):
+    if not os.path.exists(filename): return False
+    try:
+        with open(filename, "rb") as f:
+            cookies = pickle.load(f)
+        driver.get("http://inside.sockettelecom.com/")
+        for cookie in cookies:
+            driver.add_cookie(cookie)
+        driver.refresh()
+        clear_first_time_overlays(driver)
+        return True
+    except Exception:
+        if os.path.exists(filename): os.remove(filename)
+        return False
+
+def handle_login(driver):
+    driver.get("http://inside.sockettelecom.com/")
+
+    if load_cookies(driver):
+        if not login_failed(driver):
+            log("✅ Session restored via cookies.")
+            clear_first_time_overlays(driver)
+            return 
+
+    # Cookies failed or expired, now try credentials
+    USERNAME, PASSWORD = check_env_or_prompt_login(log)
+
+    while True:
+        perform_login(driver, USERNAME, PASSWORD)
+        time.sleep(2)
+        if not login_failed(driver):
+            save_cookies(driver)
+            return
+        else:
+            gui_log("❌ Login failed. Please re-enter your credentials.")
+            USERNAME, PASSWORD = prompt_for_credentials()
+            save_env_credentials(USERNAME, PASSWORD)
+
+def perform_login(driver, USERNAME, PASSWORD):
+    driver.get("http://inside.sockettelecom.com/system/login.php")
+    WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.NAME, "username")))
+    driver.find_element(By.NAME, "username").send_keys(USERNAME)
+    driver.find_element(By.NAME, "password").send_keys(PASSWORD)
+    driver.find_element(By.ID, "login").click()
+    clear_first_time_overlays(driver)
+    gui_log("Logged in successfully")
+
+def clear_first_time_overlays(driver):
+    # Dismiss alert if present
+    try:
+        WebDriverWait(driver, 0.5).until(EC.alert_is_present())
+        driver.switch_to.alert.dismiss()
+    except:
+        pass
+
+    # Known popup buttons
+    buttons = [
+        "//form[@id='valueForm']//input[@type='button']",
+        "//form[@id='f']//input[@type='button']"
+    ]
+    for xpath in buttons:
+        try:
+            WebDriverWait(driver, 0.5).until(EC.element_to_be_clickable((By.XPATH, xpath))).click()
+        except:
+            pass
+
+    # Iframe switch loop
+    for _ in range(3):
+        try:
+            WebDriverWait(driver, 0.5).until(EC.frame_to_be_available_and_switch_to_it((By.ID, "MainView")))
+            return
+        except:
+            time.sleep(0.25)
+    log("❌ Could not switch to MainView iframe.")
 
 def create_gui():
     app = TkinterDnD.Tk()
@@ -911,18 +1091,41 @@ def create_gui():
     headless_frame.pack(pady=5)
     tk.Checkbutton(headless_frame, text="Run Headless", variable=HEADLESS_MODE).pack()
 
+    global WANT_FIRST_JOBS
+    WANT_FIRST_JOBS = tk.BooleanVar(value=True)
+    tk.Checkbutton(app, text="Show First Jobs Summary", variable=WANT_FIRST_JOBS).pack()
+
+    # === HEADLESS MODE OUTPUT LOG ===
+    log_output_frame = tk.Frame(app)
+    global log_output_text
+    log_output_text = tk.Text(log_output_frame, height=10, wrap="word", state="disabled", bg="#1e1e1e", fg="lime", font=("Consolas", 9))
+    log_output_text.pack(padx=5, pady=5, fill="both", expand=True)
+    
+    def update_log_visibility(*args):
+        if HEADLESS_MODE.get():
+            log_output_frame.pack(fill="both", expand=False, padx=10, pady=(5, 10))
+        else:
+            log_output_frame.pack_forget()
+
+    HEADLESS_MODE.trace_add("write", lambda *args: update_log_visibility())
+    update_log_visibility()
+
+
+
     def drop(event):
         file_path = event.data.strip('{}')
-        try:
-            df_test = pd.read_excel(file_path)
-            process_workorders(file_path)
-        except Exception as e:
-            print(f"❌ Could not process file: {e}")
+        def threaded_process():
+            try:
+                df_test = pd.read_excel(file_path)
+                process_workorders(file_path)
+            except Exception as e:
+                gui_log(f"❌ Could not process file: {e}")
+        Thread(target=threaded_process, daemon=True).start()
 
     def parse_text():
         raw_text = textbox.get("1.0", tk.END).strip()
         if not raw_text:
-            print("No text to process.")
+            gui_log("No text to process.")
             return
         try:
             temp = reformat_contractor_text(raw_text)
@@ -932,27 +1135,21 @@ def create_gui():
             df['Time'] = df['Time'].astype(str)
 
             unique_dates = sorted(df['Date'].dropna().dt.date.unique())
-            print("\nAvailable Dates:")
-            for d in unique_dates:
-                print(f" - {d}")
-
-            start_input = input("\nEnter start date (YYYY-MM-DD): ")
-            end_input = input("Enter end date (YYYY-MM-DD): ")
-            try:
-                start_date = datetime.strptime(start_input, "%Y-%m-%d").date()
-                end_date = datetime.strptime(end_input, "%Y-%m-%d").date()
-            except ValueError:
-                print("Invalid date format. Use YYYY-MM-DD.")
+            start_date, end_date = ask_date_range(unique_dates)
+            if not start_date or not end_date:
+                gui_log("❌ No date range selected.")
                 return
 
             filtered_df = df[(df['Date'].dt.date >= start_date) & (df['Date'].dt.date <= end_date)]
 
             if filtered_df.empty:
-                print("No matching jobs found.")
+                gui_log("No matching jobs found.")
                 return
             
-            print("📦 Runtime headless check (before assign):", HEADLESS_MODE.get())
-            assign_jobs_from_dataframe(filtered_df)
+            log(f"📦 Runtime headless check (before assign): {HEADLESS_MODE.get()}")
+            def threaded_assign():
+                assign_jobs_from_dataframe(filtered_df)
+            Thread(target=threaded_assign, daemon=True).start()
 
             # === Save log
             now = datetime.now()
@@ -961,8 +1158,8 @@ def create_gui():
             with open(log_path, "w", encoding="utf-8") as f:
                 f.write("\n".join(log_lines))
 
-            print(f"\n✅ Done processing pasted text.")
-            print(f"🗂️ Output saved to: {log_path}")
+            gui_log(f"\n✅ Done processing pasted text.")
+            gui_log(f"🗂️ Output saved to: {log_path}")
 
             # === FIRST JOB SUMMARY
             first_jobs = defaultdict(list)
@@ -980,8 +1177,8 @@ def create_gui():
             filtered_df['TimeParsed'] = filtered_df['Time'].apply(lambda x: parse_flexible_time(str(x)))
             failed_times = filtered_df[filtered_df['TimeParsed'].isna()]
             if not failed_times.empty:
-                print("\n⚠️ Could not parse the following time values:")
-                print(failed_times[['Time']])
+                log("\n⚠️ Could not parse the following time values:")
+                log(failed_times[['Time']])
 
             filtered_df = filtered_df.dropna(subset=['TimeParsed', 'Name', 'Type', 'Address', 'WO'])
 
@@ -996,12 +1193,11 @@ def create_gui():
                         line = f"{tech} - {formatted_time} - {row['Name']} - {row['Type']} - {row['Address']} - WO {row['WO']}"
                         first_jobs[date].append(line)
 
-            want_first = input("\nOutput First Jobs? (y/n): ").strip().lower()
-            if want_first == 'y':
-                show_first_jobs(first_jobs)
+            if WANT_FIRST_JOBS.get():
+                app.after(0, lambda: show_first_jobs(first_jobs))
 
         except Exception as e:
-            print(f"❌ Error processing pasted text: {e}")
+            gui_log(f"❌ Error processing pasted text: {e}")
 
     btn = tk.Button(app, text="Parse & Assign from Pasted Text", command=parse_text)
     btn.pack(pady=5)
@@ -1010,77 +1206,6 @@ def create_gui():
     label.dnd_bind('<<Drop>>', drop)
 
     app.mainloop()
-
-def save_cookies(driver, filename="cookies.pkl"):
-    with open(filename, "wb") as f:
-        pickle.dump(driver.get_cookies(), f)
-
-def load_cookies(driver, filename="cookies.pkl"):
-    if not os.path.exists(filename): return False
-    try:
-        with open(filename, "rb") as f:
-            cookies = pickle.load(f)
-        driver.get("http://inside.sockettelecom.com/")
-        for cookie in cookies:
-            driver.add_cookie(cookie)
-        driver.refresh()
-        clear_first_time_overlays(driver)
-        return True
-    except Exception:
-        if os.path.exists(filename): os.remove(filename)
-        return False
-
-def handle_login(driver):
-    driver.get("http://inside.sockettelecom.com/")
-    if load_cookies(driver):
-        if "login.php" in driver.current_url or "Username" in driver.page_source:
-            perform_login(driver)
-            time.sleep(2)
-            save_cookies(driver)
-        else:
-            print("✅ Session restored via cookies.")
-            clear_first_time_overlays(driver)
-    else:
-        perform_login(driver)
-        time.sleep(2)
-        save_cookies(driver)
-
-def perform_login(driver):
-    driver.get("http://inside.sockettelecom.com/system/login.php")
-    WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.NAME, "username")))
-    driver.find_element(By.NAME, "username").send_keys(USERNAME)
-    driver.find_element(By.NAME, "password").send_keys(PASSWORD)
-    driver.find_element(By.ID, "login").click()
-    clear_first_time_overlays(driver)
-    print("✅ Login complete and overlays cleared.")
-
-def clear_first_time_overlays(driver):
-    # Dismiss alert if present
-    try:
-        WebDriverWait(driver, 0.5).until(EC.alert_is_present())
-        driver.switch_to.alert.dismiss()
-    except:
-        pass
-
-    # Known popup buttons
-    buttons = [
-        "//form[@id='valueForm']//input[@type='button']",
-        "//form[@id='f']//input[@type='button']"
-    ]
-    for xpath in buttons:
-        try:
-            WebDriverWait(driver, 0.5).until(EC.element_to_be_clickable((By.XPATH, xpath))).click()
-        except:
-            pass
-
-    # Iframe switch loop
-    for _ in range(3):
-        try:
-            WebDriverWait(driver, 0.5).until(EC.frame_to_be_available_and_switch_to_it((By.ID, "MainView")))
-            return
-        except:
-            time.sleep(0.25)
-    print("❌ Could not switch to MainView iframe.")
 
 if __name__ == "__main__":
     try:
