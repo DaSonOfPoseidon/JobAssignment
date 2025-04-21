@@ -87,13 +87,21 @@ def ask_date_range(dates):
     top = tk.Toplevel()
     top.title("Select Date Range")
     top.geometry("300x150")
-    tk.Label(top, text="Start Date:").pack(pady=(10, 0))
     
-    start = DateEntry(top, mindate=min(dates), maxdate=max(dates))
+    tk.Label(top, text="Start Date:").pack(pady=(10, 0))
+
+    try:
+        mindate = min(dates)
+        maxdate = max(dates)
+    except (ValueError, TypeError):
+        mindate = None
+        maxdate = None
+
+    start = DateEntry(top, mindate=mindate, maxdate=maxdate)
     start.pack()
 
     tk.Label(top, text="End Date:").pack(pady=(10, 0))
-    end = DateEntry(top, mindate=min(dates), maxdate=max(dates))
+    end = DateEntry(top, mindate=mindate, maxdate=maxdate)
     end.pack()
 
     selected = {}
@@ -116,16 +124,17 @@ def ask_single_date(available_dates=None, title="Select Job Date"):
 
     tk.Label(top, text="Job Date:").pack(pady=(10, 0))
 
-    kwargs = {}
-    if available_dates:
-        available_dates = sorted(d for d in available_dates if d)  # remove None
-        kwargs["mindate"] = min(available_dates)
-        kwargs["maxdate"] = max(available_dates)
+    try:
+        available_dates = sorted(d for d in available_dates if d)
+        mindate = min(available_dates)
+        maxdate = max(available_dates)
         default_date = available_dates[0]
-    else:
+    except (ValueError, TypeError):
+        mindate = None
+        maxdate = None
         default_date = datetime.today().date()
 
-    cal = DateEntry(top, width=12, background='darkblue', foreground='white', borderwidth=2, **kwargs)
+    cal = DateEntry(top, width=12, background='darkblue', foreground='white', borderwidth=2, mindate=mindate, maxdate=maxdate)
     cal.set_date(default_date)
     cal.pack(pady=5)
 
@@ -140,6 +149,7 @@ def ask_single_date(available_dates=None, title="Select Job Date"):
     top.wait_window()
 
     return selected.get("date")
+
 
 def flexible_date_parser(date_str):
     try:
@@ -183,7 +193,7 @@ def check_env_or_prompt_login(log):
         return username, password
 
 def prompt_for_credentials():
-    login_window = Tk()
+    login_window = tk.Tk()
     login_window.withdraw()
 
     USERNAME = simpledialog.askstring("Login", "Enter your USERNAME:", parent=login_window)
@@ -238,6 +248,9 @@ def process_jobs_from_list(job_list):
 
     df['Date'] = df['Date'].apply(flexible_date_parser)
     df['Time'] = df['Time'].astype(str)
+    
+    tomorrow = datetime.today().date() + timedelta(days=1)
+    df['Date'] = df['Date'].fillna(pd.Timestamp(tomorrow))      
 
     df = df.dropna(subset=['Date', 'WO'])
 
@@ -700,6 +713,7 @@ def reformat_contractor_text(text):
             })
 
     elif is_vertical:
+        gui_log("Vertical")
         current_tech = None
         current_date = None
         current_time = None
@@ -739,14 +753,72 @@ def reformat_contractor_text(text):
                 })
                 buffer = []
 
+    elif any(re.search(r"\d{1,2}:\d{2} - .* - \d{4}-\d{4}-\d{4} - .* - .* - WO \d+", line) for line in lines):
+        print(f"🧩 Matched exact grouped format with full dash structure")
+        current_tech = None
+        current_date = None
+
+        job_pattern = re.compile(
+            r"^(\d{1,2}:\d{2})\s*-\s*(.+?)\s*-\s*(\d{4}-\d{4}-\d{4})\s*-\s*(.+?)\s*-\s*(.+?)\s*-\s*WO\s*(\d+)", re.IGNORECASE
+        )
+
+        for line in lines:
+            line_clean = line.strip().replace('\ufeff', '').replace('\u200e', '')
+
+            # Tech line (ignore time blocks like "8 AM", "10 AM", etc.)
+            if re.match(r"^\d{1,2}\s*(AM|PM)$", line_clean, re.IGNORECASE):
+                continue  # skip time block headers like "8 AM"
+            elif re.match(r"^[A-Z][a-z]+$", line_clean) or line_clean.isupper():
+                current_tech = line_clean
+                continue
+
+
+            # Date line
+            if re.match(r"\d{1,2}/\d{1,2}/\d{4}", line_clean):
+                try:
+                    current_date = datetime.strptime(line_clean, "%m/%d/%Y").strftime("%Y-%m-%d")
+                except ValueError:
+                    continue
+                continue
+
+            match = job_pattern.match(line_clean)
+            print(f"🔎 Checking: {line_clean}")
+            if match and current_tech and current_date:
+                time_str, name, acc, job_type, address, wo = match.groups()
+                # Convert to 24-hour time assuming it's a PM job if hour < 8
+                try:
+                    dt_obj = datetime.strptime(time_str.strip(), "%H:%M")
+
+                    # Hack: If time is "1:00", assume PM if no morning blocks remain
+                    if dt_obj.hour < 8:
+                        dt_obj = dt_obj.replace(hour=dt_obj.hour + 12)
+                    formatted_time = dt_obj.strftime("%H:%M")
+                except:
+                    formatted_time = time_str.strip()
+
+                jobs.append({
+                    "Tech": current_tech,
+                    "Date": current_date,
+                    "Time": formatted_time,
+                    "Name": name.strip(),
+                    "Account": acc.strip(),
+                    "Type": job_type.strip(),
+                    "Address": address.strip(),
+                    "WO": wo.strip()
+                })
+                print(f"✅ Parsed job: {name} at {time_str} on {current_date}")
+
+
     elif is_grouped:
+        gui_log(f"📂 Grouped parser triggered. {len(lines)} lines to check.")
         current_tech = None
         current_date = None
         current_time = None
         tech_name_buffer = []
         last_line_was_date = False
 
-        job_pattern = re.compile(r"^(.*?) - (\d{4}-\d{4}-\d{4}) [_-] (.*?) [_-] (.*?) [_-] WO (\d+)", re.IGNORECASE)
+        job_pattern = re.compile(r"^(\d{1,2}:\d{2})\s*-\s*([^-]+?)\s*-\s*(\d{4}-\d{4}-\d{4})\s*[_-]\s*([^_-]+?)\s*[_-]\s*(.+?)\s*[_-]\s*WO\s*(\d+)", re.IGNORECASE)
+
         alt_job_pattern = re.compile(r"^(.*?) - WO (\d+)", re.IGNORECASE)
 
         def is_filler(line):
@@ -783,6 +855,7 @@ def reformat_contractor_text(text):
 
 
             # Date line
+            line_clean = line_clean.replace('\ufeff', '').replace('\u200e', '').strip()
             if re.match(r"\d{1,2}/\d{1,2}/\d{4}", line_clean):
                 current_date = datetime.strptime(line_clean, "%m/%d/%Y").strftime("%Y-%m-%d")
                 if tech_name_buffer:
@@ -802,12 +875,31 @@ def reformat_contractor_text(text):
             if "WO" in line_clean:
                 last_line_was_date = False
                 match = job_pattern.match(line_clean)
+                print(f"🔎 LINE: {line_clean}")
                 if match:
-                    name, acc, job_type, address, wo = match.groups()
+                    print("✅ Matched grouped job line!")
+
+                    if not current_date:
+                        print(f"⚠️ Skipping job line due to missing date: {line}")
+                        log(f"❌ Missing date before job block under tech {current_tech}.")
+                        continue
+
+                    time_str, name, acc, job_type, address, wo = match.groups()
+
+                    # Convert to 24-hour time assuming it's a PM job if hour < 8
+                    try:
+                        dt_obj = datetime.strptime(time_str.strip(), "%H:%M")
+                        # Hack: If time is "1:00", assume PM if no morning blocks remain
+                        if dt_obj.hour < 8:
+                            dt_obj = dt_obj.replace(hour=dt_obj.hour + 12)
+                        formatted_time = dt_obj.strftime("%H:%M")
+                    except:
+                        formatted_time = time_str.strip()
+
                     jobs.append({
                         "Tech": current_tech or "",
                         "Date": current_date or "",
-                        "Time": current_time or "",
+                        "Time": formatted_time,
                         "Name": name.strip(),
                         "Account": acc.strip(),
                         "Type": job_type.strip(),
@@ -832,6 +924,7 @@ def reformat_contractor_text(text):
                     })
                         
     elif is_informal:
+        gui_log("Informal")
         # === Single-Day Blocked Format (hyphen or underscore separated) ===
         parsed_dates = [flexible_date_parser(line) for line in lines if re.match(r"\d{1,2}/\d{1,2}/\d{4}", line)]
         job_date = ask_single_date(parsed_dates)
@@ -879,6 +972,33 @@ def reformat_contractor_text(text):
                 jobs.append(pending_job)
                 pending_job = None
 
+    elif all("\t" in line for line in lines[:5]) and not any("customer" in l.lower() for l in lines[:2]):
+        # tab-separated without headers
+        for line in lines:
+            parts = line.split("\t")
+            if len(parts) < 8:
+                continue  # skip malformed lines
+
+            date_str = parts[0].strip()
+            time_str = parts[1].strip()
+            name = parts[2].strip()
+            job_type = parts[3].strip()
+            wo = parts[4].strip()
+            address = parts[5].strip()
+            dropdown = parts[7].strip()
+
+            jobs.append({
+                "Date": date_str,
+                "Time": time_str,
+                "Name": name,
+                "Type": job_type,
+                "WO": wo,
+                "Address": address,
+                "Dropdown": dropdown
+            })
+
+
+
     else:
         # Fallback legacy format with mixed separators
         for line in lines:
@@ -905,7 +1025,12 @@ def reformat_contractor_text(text):
                     "Address": address,
                     "WO": wo
                 })
+    if jobs and any('Date' not in job for job in jobs):
+        for job in jobs:
+            if 'Date' not in job or not job['Date']:
+                job['Date'] = (datetime.today() + timedelta(days=1)).strftime("%Y-%m-%d")
 
+    gui_log(f"📦 Parsed {len(jobs)} jobs. Sample: {jobs[0] if jobs else 'none'}")
     return jobs
 
 def get_contractor_assignments(driver):
@@ -1130,9 +1255,31 @@ def create_gui():
         try:
             temp = reformat_contractor_text(raw_text)
 
+            if not temp or not isinstance(temp, list):
+                gui_log("❌ Parsed data is empty or malformed.")
+                return
+
+            # Failsafe: ensure all jobs have 'Date'
+            for job in temp:
+                if not isinstance(job, dict):
+                    continue
+                if 'Date' not in job or not job['Date']:
+                    job['Date'] = (datetime.today() + timedelta(days=1)).strftime("%Y-%m-%d")
+
             df = pd.DataFrame(temp)
+
+            if 'Date' not in df.columns:
+                gui_log("❌ 'Date' column missing after parsing. Aborting.")
+                return
+
             df['Date'] = df['Date'].apply(flexible_date_parser)
+            tomorrow = datetime.today().date() + timedelta(days=1)
+            df['Date'] = df['Date'].fillna(pd.Timestamp(tomorrow))
             df['Time'] = df['Time'].astype(str)
+
+            # The rest of your existing logic...
+
+
 
             unique_dates = sorted(df['Date'].dropna().dt.date.unique())
             start_date, end_date = ask_date_range(unique_dates)
