@@ -549,6 +549,15 @@ def assign_jobs_from_dataframe(df):
         log(f"\n🔗 Opening WO #{wo_number} — {url}")
         driver.get(url)
 
+        # Check if WO is unscheduled
+        try:
+            error_elem = driver.find_element(By.CLASS_NAME, "errors")
+            if "no scheduled dates found" in error_elem.text.lower():
+                gui_log(f"❌ WO {wo_number} is not scheduled — skipping.")
+                continue
+        except:
+            pass  # no error block found, continue
+
         matched_wo = False
         for attempt in range(1, 4):
             try:
@@ -687,351 +696,148 @@ def assign_contractor(driver, wo_number, desired_contractor_full):
         gui_log(f"❌ Contractor assignment process failed for WO #{wo_number}: {e}")
 
 def reformat_contractor_text(text):
+    from datetime import datetime, timedelta
+    import re
+    from tkinter import simpledialog
+    import tkinter as tk
+    from tkcalendar import DateEntry
+
+    def ask_date_with_default(default_date):
+        root = tk.Tk()
+        root.withdraw()
+
+        popup = tk.Toplevel()
+        popup.title("Select Job Date")
+        popup.geometry("250x120")
+
+        tk.Label(popup, text="Job Date:").pack(pady=(10, 0))
+        cal = DateEntry(popup, width=12, background='darkblue', foreground='white', borderwidth=2)
+        cal.set_date(default_date)
+        cal.pack(pady=5)
+
+        selected = {}
+        def submit():
+            selected["date"] = cal.get_date()
+            popup.destroy()
+
+        tk.Button(popup, text="OK", command=submit).pack()
+        popup.grab_set()
+        popup.wait_window()
+        root.destroy()
+        return selected.get("date")
+
     lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
     jobs = []
 
-    # Try format detection
-    is_tabular = all(any(h in line.lower() for h in ["customer", "street", "wo", "date"]) for line in lines[:2])
-    is_vertical = any(re.match(r"\d{4}-\d{4}-\d{4}", line) for line in lines[:10]) and any("wo" in line.lower() for line in lines)
-    is_grouped = any(re.match(r"\d{1,2}/\d{1,2}/\d{4}", line) for line in lines) and any(re.match(r"\d{1,2} (AM|PM)", line) for line in lines)
-    is_informal = any(re.match(r"\d{1,2}/\d{1,2}\)?", line) for line in lines[:5]) and any(re.match(r"\d{1,2}(am|pm)", line.lower()) for line in lines)
+    current_tech = None
+    current_date = None
+    current_time = None
 
-    if is_tabular:
-        headers = [h.strip().lower() for h in lines[0].split("\t")]
-        for row in lines[1:]:
-            values = row.split("\t")
-            row_dict = dict(zip(headers, values))
-            jobs.append({
-                "Tech": row_dict.get("tech", "").strip(),
-                "Date": row_dict.get("date", "").strip(),
-                "Time": row_dict.get("time frame", "").strip(),
-                "Name": row_dict.get("customer name", "").strip(),
-                "Account": row_dict.get("account number", "").strip(),
-                "Type": row_dict.get("job type", "").strip(),
-                "Address": f"{row_dict.get('street', '').strip()} {row_dict.get('city', '').strip()} {row_dict.get('zip', '').strip()}",
-                "WO": row_dict.get("work order number", "").strip()
-            })
+    date_pattern = re.compile(r"\d{1,2}/\d{1,2}/\d{4}")
+    date_alt_pattern = re.compile(r"\d{1,2}-[A-Za-z]{3}")  # 21-Apr format
+    time_block_pattern = re.compile(r"^\d{1,2}( AM| PM)?$", re.IGNORECASE)
+    job_line_pattern = re.compile(r"(\d{1,2}:\d{2})\s*-\s*(.*?)\s*-\s*(\d{4}-\d{4}-\d{4})\s*-\s*(.*?)\s*-\s*(.*?)\s*-\s*WO\s*(\d+)", re.IGNORECASE)
 
-    elif is_vertical:
-        gui_log("Vertical")
-        current_tech = None
-        current_date = None
-        current_time = None
-        buffer = []
+    def format_tech_name(name):
+        return name.capitalize() if name.isupper() else name
 
-        for i, line in enumerate(lines):
-            if re.match(r"[A-Z\s]+", line) and "AM" not in line and "PM" not in line:
-                current_tech = line.strip()
-            elif re.match(r"\d{1,2}/\d{1,2}/\d{4}", line):
-                current_date = datetime.strptime(line, "%m/%d/%Y").strftime("%Y-%m-%d")
-            elif re.match(r"\d{1,2} (AM|PM)", line):
-                current_time = line
-            else:
-                buffer.append(line)
+    date_found = False
+    for line in lines:
+        if not line:
+            continue
 
-            # Check for 7 lines, then try to read WO from next line
-            if len(buffer) == 7:
-                name = buffer[2].strip()
-                acc = buffer[3].strip()
-                job_type = buffer[1].strip()
-                address = f"{buffer[4].strip()}, {buffer[5].strip()} {buffer[6].strip()}"
-
-                # Try to look ahead to the next line (WO line)
-                next_line = lines[i+1] if i+1 < len(lines) else ""
-                wo_match = re.search(r"WO\s*(\d+)", next_line)
-                wo = wo_match.group(1) if wo_match else ""
-
-                jobs.append({
-                    "Tech": current_tech,
-                    "Date": current_date,
-                    "Time": current_time,
-                    "Name": name,
-                    "Account": acc,
-                    "Type": job_type,
-                    "Address": address,
-                    "WO": wo
-                })
-                buffer = []
-
-    elif any(re.search(r"\d{1,2}:\d{2} - .* - \d{4}-\d{4}-\d{4} - .* - .* - WO \d+", line) for line in lines):
-        print(f"🧩 Matched exact grouped format with full dash structure")
-        current_tech = None
-        current_date = None
-
-        job_pattern = re.compile(
-            r"^(\d{1,2}:\d{2})\s*-\s*(.+?)\s*-\s*(\d{4}-\d{4}-\d{4})\s*-\s*(.+?)\s*-\s*(.+?)\s*-\s*WO\s*(\d+)", re.IGNORECASE
-        )
-
-        for line in lines:
-            line_clean = line.strip().replace('\ufeff', '').replace('\u200e', '')
-
-            # Tech line (ignore time blocks like "8 AM", "10 AM", etc.)
-            if re.match(r"^\d{1,2}\s*(AM|PM)$", line_clean, re.IGNORECASE):
-                continue  # skip time block headers like "8 AM"
-            elif re.match(r"^[A-Z][a-z]+$", line_clean) or line_clean.isupper():
-                current_tech = line_clean
-                continue
-
-
-            # Date line
-            if re.match(r"\d{1,2}/\d{1,2}/\d{4}", line_clean):
-                try:
-                    current_date = datetime.strptime(line_clean, "%m/%d/%Y").strftime("%Y-%m-%d")
-                except ValueError:
-                    continue
-                continue
-
-            match = job_pattern.match(line_clean)
-            print(f"🔎 Checking: {line_clean}")
-            if match and current_tech and current_date:
-                time_str, name, acc, job_type, address, wo = match.groups()
-                # Convert to 24-hour time assuming it's a PM job if hour < 8
-                try:
-                    dt_obj = datetime.strptime(time_str.strip(), "%H:%M")
-
-                    # Hack: If time is "1:00", assume PM if no morning blocks remain
-                    if dt_obj.hour < 8:
-                        dt_obj = dt_obj.replace(hour=dt_obj.hour + 12)
-                    formatted_time = dt_obj.strftime("%H:%M")
-                except:
-                    formatted_time = time_str.strip()
-
-                jobs.append({
-                    "Tech": current_tech,
-                    "Date": current_date,
-                    "Time": formatted_time,
-                    "Name": name.strip(),
-                    "Account": acc.strip(),
-                    "Type": job_type.strip(),
-                    "Address": address.strip(),
-                    "WO": wo.strip()
-                })
-                print(f"✅ Parsed job: {name} at {time_str} on {current_date}")
-
-
-    elif is_grouped:
-        gui_log(f"📂 Grouped parser triggered. {len(lines)} lines to check.")
-        current_tech = None
-        current_date = None
-        current_time = None
-        tech_name_buffer = []
-        last_line_was_date = False
-
-        job_pattern = re.compile(r"^(\d{1,2}:\d{2})\s*-\s*([^-]+?)\s*-\s*(\d{4}-\d{4}-\d{4})\s*[_-]\s*([^_-]+?)\s*[_-]\s*(.+?)\s*[_-]\s*WO\s*(\d+)", re.IGNORECASE)
-
-        alt_job_pattern = re.compile(r"^(.*?) - WO (\d+)", re.IGNORECASE)
-
-        def is_filler(line):
-            lowered = line.lower()
-            return (
-                "blocked" in lowered or
-                "run drop" in lowered or
-                "legacy drop" in lowered or
-                "western for temp" in lowered or
-                "construction" in lowered or
-                "temp drop" in lowered
-            )
-
-        for line in lines:
-            line_clean = line.strip()
-            if not line_clean:
-                continue
-
-            # Skip obvious filler or non-job lines
-            if is_filler(line_clean):
-                continue
-
-            # Tech name (ALL CAPS, not a WO line)
-            known_non_techs = {"CLINTON", "SPLICING"}
-
-            # Tech name (ALL CAPS, not a WO line, and not a known location)
-            if re.match(r"^[A-Z\s\-]+$", line_clean) and "WO" not in line_clean:
-                if last_line_was_date and line_clean.upper() not in known_non_techs:
-                    current_tech = line_clean.strip()
-                    last_line_was_date = False
-                else:
-                    tech_name_buffer.append(line_clean.strip())
-                continue
-
-
-            # Date line
-            line_clean = line_clean.replace('\ufeff', '').replace('\u200e', '').strip()
-            if re.match(r"\d{1,2}/\d{1,2}/\d{4}", line_clean):
-                current_date = datetime.strptime(line_clean, "%m/%d/%Y").strftime("%Y-%m-%d")
-                if tech_name_buffer:
-                    current_tech = tech_name_buffer[0]
-                    tech_name_buffer = []
-                last_line_was_date = True
-                continue
-
-            # Time block (e.g., 8 AM, 10 AM)
-            if re.match(r"\d{1,2}( AM| PM|\(.*\))?", line_clean, re.IGNORECASE):
-                time_clean = re.sub(r"\(.*\)", "", line_clean, flags=re.IGNORECASE).strip()
-                current_time = time_clean.upper()
-                last_line_was_date = False
-                continue
-
-            # Job line with full info
-            if "WO" in line_clean:
-                last_line_was_date = False
-                match = job_pattern.match(line_clean)
-                print(f"🔎 LINE: {line_clean}")
-                if match:
-                    print("✅ Matched grouped job line!")
-
-                    if not current_date:
-                        print(f"⚠️ Skipping job line due to missing date: {line}")
-                        log(f"❌ Missing date before job block under tech {current_tech}.")
-                        continue
-
-                    time_str, name, acc, job_type, address, wo = match.groups()
-
-                    # Convert to 24-hour time assuming it's a PM job if hour < 8
-                    try:
-                        dt_obj = datetime.strptime(time_str.strip(), "%H:%M")
-                        # Hack: If time is "1:00", assume PM if no morning blocks remain
-                        if dt_obj.hour < 8:
-                            dt_obj = dt_obj.replace(hour=dt_obj.hour + 12)
-                        formatted_time = dt_obj.strftime("%H:%M")
-                    except:
-                        formatted_time = time_str.strip()
-
-                    jobs.append({
-                        "Tech": current_tech or "",
-                        "Date": current_date or "",
-                        "Time": formatted_time,
-                        "Name": name.strip(),
-                        "Account": acc.strip(),
-                        "Type": job_type.strip(),
-                        "Address": address.strip(),
-                        "WO": wo.strip()
-                    })
-                    continue
-
-                # Fallback: minimal WO line
-                alt_match = alt_job_pattern.match(line_clean)
-                if alt_match:
-                    desc, wo = alt_match.groups()
-                    jobs.append({
-                        "Tech": current_tech or "",
-                        "Date": current_date or "",
-                        "Time": current_time or "",
-                        "Name": desc.strip(),
-                        "Account": "",
-                        "Type": "Other",
-                        "Address": "",
-                        "WO": wo.strip()
-                    })
-                        
-    elif is_informal:
-        gui_log("Informal")
-        # === Single-Day Blocked Format (hyphen or underscore separated) ===
-        parsed_dates = [flexible_date_parser(line) for line in lines if re.match(r"\d{1,2}/\d{1,2}/\d{4}", line)]
-        job_date = ask_single_date(parsed_dates)
-        if not job_date:
-            print("❌ No job date selected. Skipping parsing.")
-            return []
-
-        current_date = job_date.strftime("%Y-%m-%d")
-
-        current_time = ""
-        pending_job = None
-        
-        for line in lines:
-            time_match = re.match(r"^(\d{1,2})(am|pm)$", line.strip().lower())
-            if time_match:
-                current_time = f"{time_match.group(1)}{time_match.group(2)}"
-                continue
-
-            # Match both - and _ as separators
-            pattern = re.compile(r"^(.*?)\s*[-_]\s*(\d{4}-\d{4}-\d{4})\s*[-_]\s*(.*?)\s*[-_]\s*(.*?)\s*[-_]\s*WO\s*(\d+)[\s\-–]*([A-Z\s]*)?$",re.IGNORECASE)
-
-            match = pattern.match(line.strip())
-            if match:
-                name, acc, job_type, address, wo, tech = match.groups()
-                job = {
-                    "Date": current_date,
-                    "Time": current_time,
-                    "Name": name.strip(),
-                    "Account": acc.strip(),
-                    "Type": job_type.strip(),
-                    "Address": address.strip(),
-                    "WO": wo.strip(),
-                    "Tech": tech.strip() if tech else ""
-                }
-                if tech:
-                    jobs.append(job)
-                else:
-                    pending_job = job  # store temporarily for follow-up tech
-                continue
-
-
-            # Check if line is a follow-up tech name (and one is pending)
-            if pending_job and re.match(r"^[A-Z\s\-]+$", line.strip()):
-                pending_job["Tech"] = line.strip()
-                jobs.append(pending_job)
-                pending_job = None
-
-    elif all("\t" in line for line in lines[:5]) and not any("customer" in l.lower() for l in lines[:2]):
-        # tab-separated without headers
-        for line in lines:
-            parts = line.split("\t")
-            if len(parts) < 8:
-                continue  # skip malformed lines
-
-            date_str = parts[0].strip()
-            time_str = parts[1].strip()
+        # Handle SubT format
+        parts = re.split(r"\t+| {2,}", line)
+        if len(parts) >= 8:
+            raw_date = parts[0].strip()
+            raw_time = parts[1].strip()
             name = parts[2].strip()
             job_type = parts[3].strip()
             wo = parts[4].strip()
             address = parts[5].strip()
-            dropdown = parts[7].strip()
+            city = parts[6].strip()
+            tech = format_tech_name(parts[7].strip())
+
+            try:
+                if "-" in raw_date and len(raw_date.split("-")) == 2:
+                    parsed_date = datetime.strptime(raw_date + f"-{datetime.today().year}", "%d-%b-%Y").date()
+                else:
+                    parsed_date = datetime.strptime(raw_date, "%m/%d/%Y").date()
+                date_found = True
+            except:
+                parsed_date = None
 
             jobs.append({
-                "Date": date_str,
-                "Time": time_str,
+                "Tech": tech,
+                "Date": parsed_date,
+                "Time": raw_time,
                 "Name": name,
+                "Account": "",
                 "Type": job_type,
-                "WO": wo,
-                "Address": address,
-                "Dropdown": dropdown
+                "Address": f"{address}, {city}",
+                "WO": wo
+            })
+            continue
+
+        # Tech name detection (all caps or capitalized)
+        if re.match(r"^[A-Z][A-Za-z\s]+$", line):
+            current_tech = format_tech_name(line.strip())
+            continue
+
+        # Date detection
+        if date_pattern.match(line):
+            try:
+                current_date = datetime.strptime(line.strip(), "%m/%d/%Y").date()
+                date_found = True
+                continue
+            except:
+                pass
+        elif date_alt_pattern.match(line):
+            try:
+                current_date = datetime.strptime(line.strip() + f"-{datetime.today().year}", "%d-%b-%Y").date()
+                date_found = True
+                continue
+            except:
+                pass
+
+        # Time block header (ignored)
+        if time_block_pattern.match(line):
+            continue
+
+        match = job_line_pattern.match(line)
+        if match:
+            time_str, name, acc, job_type, address, wo = match.groups()
+
+            # Try parsing time
+            try:
+                dt_obj = datetime.strptime(time_str.strip(), "%H:%M")
+                if dt_obj.hour < 8:
+                    dt_obj = dt_obj.replace(hour=dt_obj.hour + 12)  # assume PM
+                formatted_time = dt_obj.strftime("%H:%M")
+            except:
+                formatted_time = time_str.strip()
+
+            jobs.append({
+                "Tech": current_tech or "",
+                "Date": current_date or "",
+                "Time": formatted_time,
+                "Name": name.strip(),
+                "Account": acc.strip(),
+                "Type": job_type.strip(),
+                "Address": address.strip(),
+                "WO": wo.strip()
             })
 
-
-
-    else:
-        # Fallback legacy format with mixed separators
-        for line in lines:
-            # Normalize to use " - " between parts
-            line = re.sub(r'\s*[_-]\s*', ' - ', line)
-            parts = [p.strip() for p in line.split(" - ")]
-
-            # Look for WO at the end and extract
-            wo_match = re.search(r"WO\s*(\d+)", line, re.IGNORECASE)
-            wo = wo_match.group(1) if wo_match else ""
-
-            if len(parts) >= 4 and wo:
-                name = parts[0]
-                acc = parts[1]
-                job_type = parts[2]
-                address = parts[3]
-                jobs.append({
-                    "Tech": "",
-                    "Date": "",
-                    "Time": "",
-                    "Name": name,
-                    "Account": acc,
-                    "Type": job_type,
-                    "Address": address,
-                    "WO": wo
-                })
-    if jobs and any('Date' not in job for job in jobs):
+    if not date_found:
+        # Prompt user for date if not found
+        tomorrow = datetime.today().date() + timedelta(days=1)
+        fallback_date = ask_date_with_default(tomorrow)
         for job in jobs:
-            if 'Date' not in job or not job['Date']:
-                job['Date'] = (datetime.today() + timedelta(days=1)).strftime("%Y-%m-%d")
+            job["Date"] = fallback_date
 
-    gui_log(f"📦 Parsed {len(jobs)} jobs. Sample: {jobs[0] if jobs else 'none'}")
     return jobs
+
+
 
 def get_contractor_assignments(driver):
     try:
@@ -1195,8 +1001,12 @@ def create_gui():
     label = tk.Label(app, text="Drag and drop your Excel file here", width=60, height=5, bg="lightgray")
     label.pack(padx=10, pady=10)
 
-    textbox = tk.Text(app, height=10, wrap="word")
-    textbox.pack(padx=10, pady=(0, 5), fill="both", expand=True)
+    textbox_frame = tk.Frame(app)
+    textbox_frame.pack(fill="x", padx=10, pady=(0, 5))  # fixed vertical size
+
+    textbox = tk.Text(textbox_frame, height=10, wrap="word")
+    textbox.pack(fill="x", expand=False)
+
     
     global SELECTED_CONTRACTOR
     SELECTED_CONTRACTOR = tk.StringVar(value="(none)")
@@ -1222,13 +1032,14 @@ def create_gui():
 
     # === HEADLESS MODE OUTPUT LOG ===
     log_output_frame = tk.Frame(app)
+    log_output_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
     global log_output_text
     log_output_text = tk.Text(log_output_frame, height=10, wrap="word", state="disabled", bg="#1e1e1e", fg="lime", font=("Consolas", 9))
     log_output_text.pack(padx=5, pady=5, fill="both", expand=True)
     
     def update_log_visibility(*args):
         if HEADLESS_MODE.get():
-            log_output_frame.pack(fill="both", expand=False, padx=10, pady=(5, 10))
+            log_output_frame.pack(fill="both", expand=True, padx=10, pady=(5, 10))
         else:
             log_output_frame.pack_forget()
 
