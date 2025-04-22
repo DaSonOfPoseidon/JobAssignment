@@ -10,6 +10,7 @@ from tkinter import messagebox
 from dotenv import load_dotenv, set_key
 import pandas as pd
 from threading import Thread
+import threading
 import tkinter as tk
 from tkcalendar import DateEntry
 from tkinter import simpledialog
@@ -28,6 +29,7 @@ CHROMEDRIVER_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."
 LOG_FOLDER = os.path.join(os.path.dirname(__file__), "..", "logs")
 os.makedirs(LOG_FOLDER, exist_ok=True)
 load_dotenv(dotenv_path=".env")
+cookie_lock = threading.Lock()
 
 COLUMN_DATE = 0
 COLUMN_TIME = 1
@@ -149,7 +151,6 @@ def ask_single_date(available_dates=None, title="Select Job Date"):
     top.wait_window()
 
     return selected.get("date")
-
 
 def flexible_date_parser(date_str):
     try:
@@ -511,7 +512,7 @@ def process_workorders(file_path):
         show_first_jobs(first_jobs)
 
 def assign_jobs_from_dataframe(df):
-    gui_log(f"\nProcessing {len(df)} work orders from pasted text...")
+    gui_log(f"Processing {len(df)} work orders from pasted text...")
 
     options = webdriver.ChromeOptions()
     if is_headless():
@@ -695,6 +696,15 @@ def assign_contractor(driver, wo_number, desired_contractor_full):
     except Exception as e:
         gui_log(f"❌ Contractor assignment process failed for WO #{wo_number}: {e}")
 
+def looks_like_grouped_tech_date_format(lines):
+    date_pattern = re.compile(r"\d{1,2}[-/]\d{1,2}([-/]\d{2,4})?")
+    for i in range(len(lines) - 1):
+        name_line = lines[i].strip()
+        date_line = lines[i + 1].strip()
+        if name_line and not name_line.isupper() and date_pattern.match(date_line):
+            return True
+    return False
+
 def reformat_contractor_text(text):
     from datetime import datetime, timedelta
     import re
@@ -733,10 +743,13 @@ def reformat_contractor_text(text):
     current_date = None
     current_time = None
 
+    is_grouped_inline_with_tech = all("WO" in l and l.count(" - ") >= 6 for l in lines[:5])
     date_pattern = re.compile(r"\d{1,2}/\d{1,2}/\d{4}")
     date_alt_pattern = re.compile(r"\d{1,2}-[A-Za-z]{3}")  # 21-Apr format
     time_block_pattern = re.compile(r"^\d{1,2}( AM| PM)?$", re.IGNORECASE)
     job_line_pattern = re.compile(r"(\d{1,2}:\d{2})\s*-\s*(.*?)\s*-\s*(\d{4}-\d{4}-\d{4})\s*-\s*(.*?)\s*-\s*(.*?)\s*-\s*WO\s*(\d+)", re.IGNORECASE)
+    is_subt_tabular = all(re.match(r"\d{1,2}/\d{1,2}/\d{4}", l) for l in lines[:3]) and all("\t" in l for l in lines[:3])
+
 
     def format_tech_name(name):
         return name.capitalize() if name.isupper() else name
@@ -745,6 +758,9 @@ def reformat_contractor_text(text):
     for line in lines:
         if not line:
             continue
+
+        if looks_like_grouped_tech_date_format(lines):
+            return parse_grouped_tech_date_schedule(lines, selected_date=None)
 
         # Handle SubT format
         parts = re.split(r"\t+| {2,}", line)
@@ -799,10 +815,33 @@ def reformat_contractor_text(text):
                 continue
             except:
                 pass
+        elif is_subt_tabular:
+            jobs = parse_subt_tabular_variant(lines)
+
 
         # Time block header (ignored)
         if time_block_pattern.match(line):
             continue
+        
+        if is_grouped_inline_with_tech:
+            jobs = []
+            pattern = re.compile(r"^(.*?) - (.*?) - (.*?) - (.*?) - (.*?) - WO (\d{6}) - (.+)$", re.IGNORECASE)
+            for line in lines:
+                match = pattern.match(line)
+                if match:
+                    time_str, name, acc, job_type, address, wo, tech = match.groups()
+                    jobs.append({
+                        "Time": time_str.strip(),
+                        "Name": name.strip(),
+                        "Account": acc.strip(),
+                        "Type": job_type.strip(),
+                        "Address": address.strip(),
+                        "WO": wo.strip(),
+                        "Tech": tech.strip(),
+                        "Date": current_date or "",  # <- optional fallback if needed
+                    })
+            return jobs
+
 
         match = job_line_pattern.match(line)
         if match:
@@ -834,10 +873,105 @@ def reformat_contractor_text(text):
         fallback_date = ask_date_with_default(tomorrow)
         for job in jobs:
             job["Date"] = fallback_date
+    
+    if all('\t' in line for line in lines[:3]) and len(re.split(r'\t+', lines[0])) == 7:
+        return parse_subt_tabular_variant(lines)
 
     return jobs
 
+def parse_subt_tabular_variant(lines):
+    jobs = []
+    for line in lines:
+        print(f"[DEBUG] Raw line: {repr(line)}")
+        parts = re.split(r'\s{2,}|\t+', line.strip())
+        print(f"[DEBUG] Split parts: {parts}")
+        if len(parts) < 7:
+            continue  # Skip malformed lines
 
+        date = parts[0]
+        time = parts[1]
+        name = parts[2]
+        job_type = parts[3]
+        wo = parts[4]
+        address = parts[5]
+        tech = parts[6]
+
+        jobs.append({
+            "Date": date.strip(),
+            "Time": time.strip(),
+            "Name": name.strip(),
+            "Type": job_type.strip(),
+            "WO": wo.strip(),
+            "Address": address.strip(),
+            "Tech": tech.strip(),
+        })
+
+    return jobs
+
+def parse_grouped_tech_date_schedule(lines, selected_date=None):
+    jobs = []
+    current_tech = None
+    current_date = None
+    current_time = None
+
+    date_pattern = re.compile(r"\d{1,2}[-/]\d{1,2}([-/]\d{2,4})?")
+    time_pattern = re.compile(r"^\d{1,2}(?::\d{2})?\s?(AM|PM)?$", re.IGNORECASE)
+    job_pattern = re.compile(
+        r"(?:- )?(?P<name>.+?) - (?P<account>\d{4}-\d{4}-\d{4}) - (?P<type>.+?) - (?P<address>.+?) - WO (?P<wo>\d+)",
+        re.IGNORECASE
+    )
+
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if not line:
+            continue
+
+        # Detect date (after name line)
+        if date_pattern.match(line):
+            try:
+                parsed = datetime.strptime(line.replace('-', '/'), "%m/%d/%y")
+            except:
+                try:
+                    parsed = datetime.strptime(line.replace('-', '/'), "%m/%d")
+                    parsed = parsed.replace(year=datetime.today().year)
+                except:
+                    continue
+            current_date = parsed.strftime("%-m/%-d/%y") if os.name != 'nt' else parsed.strftime("%#m/%#d/%y")
+            continue
+
+        # Detect new tech name (assumes followed by a date)
+        if i + 1 < len(lines) and date_pattern.match(lines[i + 1].strip()):
+            current_tech = line.strip()
+            continue
+
+        # Detect time header
+        if time_pattern.match(line):
+        # Normalize times like "8AM" → "8:00 AM"
+            time_match = re.match(r"^(\d{1,2})(AM|PM)$", line.strip(), re.IGNORECASE)
+            if time_match:
+                hour, meridiem = time_match.groups()
+                current_time = f"{hour}:00 {meridiem.upper()}"
+            else:
+                current_time = line.strip()
+
+            continue
+
+        # Match job line
+        match = job_pattern.match(line)
+        if match and current_tech and current_date:
+            data = match.groupdict()
+            jobs.append({
+                "Tech": current_tech,
+                "Date": current_date,
+                "Time": current_time or "Unknown",
+                "Name": data["name"].strip(),
+                "Account": data["account"].strip(),
+                "Type": data["type"].strip(),
+                "Address": data["address"].strip(),
+                "WO": data["wo"].strip()
+            })
+
+    return jobs
 
 def get_contractor_assignments(driver):
     try:
@@ -915,14 +1049,18 @@ def is_headless():
         return False
 
 def save_cookies(driver, filename="cookies.pkl"):
-    with open(filename, "wb") as f:
-        pickle.dump(driver.get_cookies(), f)
+    with cookie_lock:
+        with open(filename, "wb") as f:
+            pickle.dump(driver.get_cookies(), f)
+
 
 def load_cookies(driver, filename="cookies.pkl"):
     if not os.path.exists(filename): return False
     try:
-        with open(filename, "rb") as f:
-            cookies = pickle.load(f)
+        with cookie_lock:
+            with open(filename, "rb") as f:
+                cookies = pickle.load(f)
+
         driver.get("http://inside.sockettelecom.com/")
         for cookie in cookies:
             driver.add_cookie(cookie)
@@ -1088,10 +1226,6 @@ def create_gui():
             df['Date'] = df['Date'].fillna(pd.Timestamp(tomorrow))
             df['Time'] = df['Time'].astype(str)
 
-            # The rest of your existing logic...
-
-
-
             unique_dates = sorted(df['Date'].dropna().dt.date.unique())
             start_date, end_date = ask_date_range(unique_dates)
             if not start_date or not end_date:
@@ -1107,6 +1241,8 @@ def create_gui():
             log(f"📦 Runtime headless check (before assign): {HEADLESS_MODE.get()}")
             def threaded_assign():
                 assign_jobs_from_dataframe(filtered_df)
+                gui_log("✅ All jobs have been assigned.")
+
             Thread(target=threaded_assign, daemon=True).start()
 
             # === Save log
@@ -1116,8 +1252,8 @@ def create_gui():
             with open(log_path, "w", encoding="utf-8") as f:
                 f.write("\n".join(log_lines))
 
-            gui_log(f"\n✅ Done processing pasted text.")
-            gui_log(f"🗂️ Output saved to: {log_path}")
+            gui_log(f"✅ Done processing pasted text.")
+            #gui_log(f"🗂️ Output saved to: {log_path}")
 
             # === FIRST JOB SUMMARY
             first_jobs = defaultdict(list)
