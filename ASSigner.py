@@ -47,7 +47,8 @@ CONTRACTOR_LABELS = {
     "TGS": "TGS Fiber",
     "Tex-Star": "Tex-Star Communications",
     "Pifer": "Pifer Quality Communications",
-    "advanced": "Advanced Electric",
+    "Advanced": "Advanced Electric",
+    "All Clear": "All Clear",
 }
 
 NAME_CORRECTIONS = {
@@ -62,7 +63,8 @@ NAME_CORRECTIONS = {
     "jacob": "Jacob Jones",
     "adam": "Adam Ward",
     "mike o": "Michael Orozco",
-    "jeffery g": "Jeffrey Givens"
+    "jeffery g": "Jeffrey Givens",
+    "brandon t": "Brandon Turner"
 }
 
 log_lines = []
@@ -639,6 +641,46 @@ def assign_jobs_from_dataframe(df):
         except Exception as e:
             gui_log(f"❌ Error assigning WO #{wo_number}: {e}")
 
+def parse_dated_tabular_with_city(lines):
+    jobs = []
+    for i, line in enumerate(lines, start=1):
+        # split by tabs or 2+ spaces
+        parts = re.split(r'\t+|\s{2,}', line.strip())
+        parts = [p.strip() for p in parts]
+
+        if len(parts) < 8:
+            print(f"[❌ MALFORMED LINE {i}] Too few parts ({len(parts)}): {line}")
+            continue
+
+        date = parts[0]
+        time = parts[1]
+        name = parts[2]
+        job_type = parts[3]
+        wo_field = parts[4]
+        address = parts[5]
+        city = parts[6]
+        tech = parts[7]
+
+        wo_match = re.search(r"\bWO\s*(\d{6})\b", wo_field)
+        if not wo_match:
+            print(f"[❌ MALFORMED LINE {i}] Could not extract WO from: '{wo_field}' — full line: {line}")
+            continue
+
+        wo = wo_match.group(1)
+        jobs.append({
+            "Date": date.strip(),
+            "Time": time.strip(),
+            "Name": name.strip(),
+            "Type": job_type.strip(),
+            "WO": wo.strip(),
+            "Address": f"{address.strip()}, {city.strip()}",
+            "Tech": tech.strip()
+        })
+
+    print(f"[✅ Parsed] {len(jobs)} valid job(s) from dated tabular format.")
+    return jobs
+
+
 def assign_contractor(driver, wo_number, desired_contractor_full):
     try:
         # 🧠 Trigger the assignment UI manually using JavaScript
@@ -706,11 +748,6 @@ def looks_like_grouped_tech_date_format(lines):
     return False
 
 def reformat_contractor_text(text):
-    from datetime import datetime, timedelta
-    import re
-    from tkinter import simpledialog
-    import tkinter as tk
-    from tkcalendar import DateEntry
 
     def ask_date_with_default(default_date):
         root = tk.Tk()
@@ -743,13 +780,22 @@ def reformat_contractor_text(text):
     current_date = None
     current_time = None
 
+    print(f"[DEBUG] Raw line count: {len(lines)}")
+    for i, l in enumerate(lines[:5], 1):
+        print(f"[Line {i}] {repr(l)}")
+
+    # === Format: Dated tabular with city + tech (tabs or clean spacing)
+    if all("WO" in l and len(re.split(r'\t+|\s{2,}', l)) >= 8 for l in lines[:5]):
+        print("[DEBUG] Triggering parse_dated_tabular_with_city()")
+        return parse_dated_tabular_with_city(lines)
+
     is_grouped_inline_with_tech = all("WO" in l and l.count(" - ") >= 6 for l in lines[:5])
     date_pattern = re.compile(r"\d{1,2}/\d{1,2}/\d{4}")
     date_alt_pattern = re.compile(r"\d{1,2}-[A-Za-z]{3}")  # 21-Apr format
     time_block_pattern = re.compile(r"^\d{1,2}( AM| PM)?$", re.IGNORECASE)
     job_line_pattern = re.compile(r"(\d{1,2}:\d{2})\s*-\s*(.*?)\s*-\s*(\d{4}-\d{4}-\d{4})\s*-\s*(.*?)\s*-\s*(.*?)\s*-\s*WO\s*(\d+)", re.IGNORECASE)
     is_subt_tabular = all(re.match(r"\d{1,2}/\d{1,2}/\d{4}", l) for l in lines[:3]) and all("\t" in l for l in lines[:3])
-
+    is_dated_tabular_with_city = all("WO" in l and l.count("  ") >= 3 for l in lines[:5])
 
     def format_tech_name(name):
         return name.capitalize() if name.isupper() else name
@@ -841,7 +887,9 @@ def reformat_contractor_text(text):
                         "Date": current_date or "",  # <- optional fallback if needed
                     })
             return jobs
-
+        
+        if is_dated_tabular_with_city:
+            return parse_dated_tabular_with_city(lines)
 
         match = job_line_pattern.match(line)
         if match:
@@ -876,6 +924,7 @@ def reformat_contractor_text(text):
     
     if all('\t' in line for line in lines[:3]) and len(re.split(r'\t+', lines[0])) == 7:
         return parse_subt_tabular_variant(lines)
+    
 
     return jobs
 
