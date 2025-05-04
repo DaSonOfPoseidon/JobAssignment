@@ -9,6 +9,7 @@ from collections import defaultdict
 from tkinter import messagebox
 from dotenv import load_dotenv, set_key
 import pandas as pd
+from rapidfuzz import fuzz
 from threading import Thread
 import threading
 import tkinter as tk
@@ -51,29 +52,44 @@ CONTRACTOR_LABELS = {
     "All Clear": "All Clear",
 }
 
-NAME_CORRECTIONS = {
-    "jeff t": "Jeffery Thornton",
-    "cliff": "Clifford Kunkle",
-    "christopher k": "Chris Kunkle",
-    "simmie": "Simmie Dunn",
-    "will": "William Woods",
-    "nick": "Nick Prichett",
-    "kyle": "Kyle Thatcher",
-    "blake": "Blake Wellman",
-    "jacob": "Jacob Jones",
-    "adam": "Adam Ward",
-    "mike o": "Michael Orozco",
-    "jeffery g": "Jeffrey Givens",
-    "brandon t": "Brandon Turner",
-    "andrew": "Andrew Orton",
-    "chris": "Chris Kunkle",
-    "dooley": "Dooley Heflin",
-    "george": "George Stone",
-    "john": "John Orton",
-    "jeff": "Jeffrey Givens",
-    "robby": "Robby Cowart",
-    "clinton": "William Woods"
+CONTRACTOR_NAME_CORRECTIONS = {
+    "Subterraneus Installs": {
+        "brandon": "Brandon Turner",
+        "jeff": "Jeffrey Givens",
+        "chris": "Chris Kunkle",
+        "cliff": "Clifford Kunkle",
+        "simmie": "Simmie Dunn",   
+        "andrew": "Andrew Orton",
+        "dooley": "Dooley Heflin",
+        "george": "George Stone",
+        "john": "John Orton",
+    },
+    "TGS Fiber": {
+        "jacob": "Jacob Jones",
+        "clinton": "William Woods",
+        "nick": "Nick Prichett",
+        "kyle": "Kyle Thatcher",
+        "blake": "Blake Wellman",
+        "adam": "Adam Ward",
+    },
+    "Tex-Star Communications": {
+        "robby": "Robby Cowart",
+    },
+    "Pifer Quality Communications": {
+        "caleb": "Caleb Pifer",
+        "blake": "Blake Pifer",
+        "cody": "Cody Wolfe"
+    },
+    "All Clear": {
+        "brandon": "Brandon Thompson",
+        "jacob": "Jacob Hein"
+    },
+    "default": {    
+        "will": "William Woods",
+        "brandon": "Brandon Turner"
+    }
 }
+
 
 log_lines = []
 
@@ -237,7 +253,7 @@ def build_first_jobs_summary(df, name_column="Dropdown"):
             raw_tech = row.get(name_column, '').strip().lower()
             if raw_tech not in seen:
                 seen.add(raw_tech)
-                corrected = NAME_CORRECTIONS.get(raw_tech, raw_tech)
+                corrected = get_corrected_name(raw_tech, SELECTED_CONTRACTOR.get())
                 parts = corrected.strip().split()
                 if len(parts) >= 2:
                     tech_display = f"{parts[0].capitalize()} {parts[1][0].upper()}"
@@ -255,6 +271,70 @@ def build_first_jobs_summary(df, name_column="Dropdown"):
 
     return first_jobs
 
+def normalize_name_key(name_input):
+    name_input = name_input.strip().lower()
+    parts = name_input.split()
+    if len(parts) == 1:
+        return parts[0]
+    elif len(parts) >= 2:
+        return f"{parts[0]} {parts[1][0]}"  # e.g., "jeff g"
+    return name_input
+
+def match_dropdown_option(select: Select, raw_name: str, contractor_full: str) -> str:
+    corrected_name = get_corrected_name(raw_name.strip(), contractor_full)
+    key_parts = corrected_name.lower().split()
+    first_name = key_parts[0] if key_parts else ""
+    last_initial = key_parts[1][0] if len(key_parts) > 1 else ""
+
+    # Full name exact match
+    for option in select.options:
+        if option.text.strip().lower() == corrected_name.lower():
+            return option.text
+
+    # First name + last initial match
+    for option in select.options:
+        full_parts = option.text.lower().strip().split()
+        if len(full_parts) >= 2 and full_parts[0].startswith(first_name) and full_parts[1][0] == last_initial:
+            return option.text
+
+    # Loose first name match
+    potential_matches = [opt.text for opt in select.options if opt.text.lower().startswith(first_name)]
+    if len(potential_matches) == 1:
+        return potential_matches[0]
+
+    return None  # fallback — caller must handle
+
+def get_corrected_name(name_input, contractor_full):
+    if not name_input:
+        return name_input
+
+    key = normalize_name_key(name_input)
+    
+    # First, try contractor-specific corrections
+    corrections = CONTRACTOR_NAME_CORRECTIONS.get(contractor_full)
+    if corrections and key in corrections:
+        return corrections[key]
+    
+    # Fallback to first word if "brandon t" isn't found but "brandon" exists
+    key_parts = key.split()
+    if corrections and key_parts and key_parts[0] in corrections:
+        return corrections[key_parts[0]]
+
+    # Try fuzzy match on contractor corrections
+    if corrections:
+        best_match = None
+        highest_score = 0
+        for known_key in corrections:
+            score = fuzz.ratio(key_parts[0], known_key)
+            if score > 90 and score > highest_score:
+                best_match = known_key
+                highest_score = score
+        if best_match:
+            return corrections[best_match]
+
+    # Fallback to default corrections
+    fallback = CONTRACTOR_NAME_CORRECTIONS.get("default", {})
+    return fallback.get(key_parts[0], name_input)
 
 def login_failed(driver):
     try:
@@ -384,28 +464,6 @@ def verify_work_order_page(driver, wo_number, url, max_attempts=3):
         time.sleep(5)
     return False
 
-def find_matching_dropdown_option(select, dropdown_value):
-    dropdown_value = dropdown_value.lower()
-    if dropdown_value in NAME_CORRECTIONS:
-        corrected_name = NAME_CORRECTIONS[dropdown_value]
-        for opt in select.options:
-            if opt.text.strip().lower() == corrected_name.lower():
-                return opt.text
-
-    parts = dropdown_value.strip().split()
-    if not parts:
-        return None
-    first_name = parts[0]
-    last_initial = parts[1][0] if len(parts) > 1 else ""
-
-    for opt in select.options:
-        full_parts = opt.text.lower().strip().split()
-        if len(full_parts) >= 2 and full_parts[0].startswith(first_name) and full_parts[1][0] == last_initial:
-            return opt.text
-
-    potential_matches = [opt.text for opt in select.options if opt.text.lower().startswith(first_name)]
-    return potential_matches[0] if len(potential_matches) == 1 else None
-
 def process_workorders(file_path):
     gui_log(f"\nProcessing file: {file_path}")
     df_raw = pd.read_excel(file_path)
@@ -485,44 +543,10 @@ def process_workorders(file_path):
                 EC.presence_of_element_located((By.ID, "AssignEmpID"))
             )
             select = Select(dropdown)
-
-            parts = dropdown_value.strip().lower().split()
-            if not parts:
-                gui_log(f"❌ No valid name format for WO #{wo_number} — skipping.")
-                continue
-
-            first_name = parts[0]
-            last_initial = parts[1][0] if len(parts) > 1 else ""
-            matched_option = None
-
-            if dropdown_value.strip().lower() in NAME_CORRECTIONS:
-                corrected_name = NAME_CORRECTIONS[dropdown_value.strip().lower()]
-                for option in select.options:
-                    if option.text.strip().lower() == corrected_name.lower():
-                        matched_option = option.text
-                        break
+            matched_option = match_dropdown_option(select, dropdown_value, desired_contractor_full)
 
             if not matched_option:
-                for option in select.options:
-                    full_text = option.text.lower().strip()
-                    full_parts = full_text.split()
-                    if len(full_parts) >= 2:
-                        full_first = full_parts[0]
-                        full_last_initial = full_parts[1][0]
-                        if full_first.startswith(first_name) and full_last_initial == last_initial:
-                            matched_option = option.text
-                            break
-
-            if not matched_option:
-                potential_matches = [opt.text for opt in select.options if opt.text.lower().startswith(first_name.lower())]
-                if len(potential_matches) == 1:
-                    matched_option = potential_matches[0]
-                elif len(potential_matches) > 1:
-                    gui_log(f"❌ Ambiguous first name '{first_name}' — found multiple matches: {', '.join(potential_matches)}")
-                    continue
-
-            if not matched_option:
-                gui_log(f"❌ No dropdown match for '{dropdown_value}' — skipping WO #{wo_number}")
+                gui_log(f"❌ No dropdown match for '{dropdown_value}' — skipping WO #{wo_number}", level="warning")
                 continue
 
             # Check and remove other assignments first
@@ -676,17 +700,20 @@ def assign_jobs_from_dataframe(df):
             select = Select(dropdown)
             matched_option = None
 
-            parts = dropdown_value.lower().split()
-            first_name = parts[0] if parts else ""
-            last_initial = parts[1][0] if len(parts) > 1 else ""
+            # Get corrected name with contractor context
+            corrected_name = get_corrected_name(dropdown_value.strip(), desired_contractor_full)
+            key_parts = corrected_name.strip().lower().split()
 
-            if dropdown_value.lower() in NAME_CORRECTIONS:
-                corrected_name = NAME_CORRECTIONS[dropdown_value.lower()]
-                for option in select.options:
-                    if option.text.lower() == corrected_name.lower():
-                        matched_option = option.text
-                        break
+            first_name = key_parts[0] if key_parts else ""
+            last_initial = key_parts[1][0] if len(key_parts) > 1 else ""
 
+            # Try full corrected name match
+            for option in select.options:
+                if option.text.lower().strip() == corrected_name.lower():
+                    matched_option = option.text
+                    break
+
+            # Try first + last initial match
             if not matched_option:
                 for option in select.options:
                     full_parts = option.text.lower().strip().split()
@@ -694,6 +721,7 @@ def assign_jobs_from_dataframe(df):
                         matched_option = option.text
                         break
 
+            # Try loose match by first name
             if not matched_option:
                 matches = [opt.text for opt in select.options if opt.text.lower().startswith(first_name)]
                 if len(matches) == 1:
@@ -702,6 +730,7 @@ def assign_jobs_from_dataframe(df):
             if not matched_option:
                 gui_log(f"❌ No dropdown match for '{dropdown_value}' — skipping WO #{wo_number}")
                 continue
+
 
             assignments_div = WebDriverWait(driver, 5).until(
                 EC.presence_of_element_located((By.ID, "AssignmentsList"))
