@@ -64,7 +64,15 @@ NAME_CORRECTIONS = {
     "adam": "Adam Ward",
     "mike o": "Michael Orozco",
     "jeffery g": "Jeffrey Givens",
-    "brandon t": "Brandon Turner"
+    "brandon t": "Brandon Turner",
+    "andrew": "Andrew Orton",
+    "chris": "Chris Kunkle",
+    "dooley": "Dooley Heflin",
+    "george": "George Stone",
+    "john": "John Orton",
+    "jeff": "Jeffrey Givens",
+    "robby": "Robby Cowart",
+    "clinton": "William Woods"
 }
 
 log_lines = []
@@ -121,6 +129,39 @@ def ask_date_range(dates):
 
     return selected.get('start'), selected.get('end')
 
+def parse_flexible_time(t):
+    t = str(t).strip().lower().replace('.', '')
+
+    # Force PM for common afternoon times like 1:00, 2:00, 3:00, etc.
+    force_pm_hours = {1, 2, 3, 4, 5}
+    match = re.match(r"^(\d{1,2})(:\d{2})?$", t)
+    if match:
+        hour = int(match.group(1))
+        minute = int(match.group(2)[1:]) if match.group(2) else 0
+
+        if hour in force_pm_hours:
+            hour += 12  # convert to 13:00, 14:00, etc.
+
+        return datetime.strptime(f"{hour}:{minute:02d}", "%H:%M")
+
+    # Append am/pm suffix based on heuristics if it's in a known format
+    if re.match(r"^\d{1,2}:\d{2}$", t):
+        hour = int(t.split(":")[0])
+        if hour in force_pm_hours:
+            t += " pm"
+        else:
+            t += " am"
+
+    formats = ("%I:%M %p", "%I %p", "%I%p", "%H:%M", "%H:%M:%S", "%I:%M%p")
+
+    for fmt in formats:
+        try:
+            return datetime.strptime(t, fmt)
+        except:
+            continue
+
+    return pd.NaT
+
 def ask_single_date(available_dates=None, title="Select Job Date"):
     top = tk.Toplevel()
     top.title(title)
@@ -154,6 +195,13 @@ def ask_single_date(available_dates=None, title="Select Job Date"):
 
     return selected.get("date")
 
+def force_pm_if_needed(dt):
+    if pd.isna(dt):
+        return dt
+    if dt.hour in {1, 2, 3, 4, 5}:
+        return dt.replace(hour=dt.hour + 12)
+    return dt
+
 def flexible_date_parser(date_str):
     try:
         return pd.to_datetime(str(date_str), errors='coerce')
@@ -162,9 +210,51 @@ def flexible_date_parser(date_str):
 
 def format_time_str(t):
     try:
-        return datetime.strptime(t.strip(), "%I:%M %p").strftime("%-I%p").lower()
+        if isinstance(t, datetime):
+            dt_obj = t
+        else:
+            dt_obj = datetime.strptime(t.strip(), "%H:%M")
+        return dt_obj.strftime("%-I%p").lower() if os.name != 'nt' else dt_obj.strftime("%#I%p").lower()
     except:
-        return t.strip()
+        return str(t).strip()
+
+def build_first_jobs_summary(df, name_column="Dropdown"):
+    first_jobs = defaultdict(list)
+
+    df['TimeParsed'] = df['Time'].apply(lambda x: parse_flexible_time(str(x)))
+    df['TimeParsed'] = df['TimeParsed'].apply(force_pm_if_needed)
+    failed_times = df[df['TimeParsed'].isna()]
+    if not failed_times.empty:
+        log("\n⚠️ Could not parse the following time values:")
+        log(failed_times[['Time']])
+
+    df = df.dropna(subset=['TimeParsed', 'Name', 'Type', 'Address', 'WO'])
+
+    for date, group in df.groupby(df['Date'].dt.date):
+        group = group.sort_values('TimeParsed')
+        seen = set()
+        for _, row in group.iterrows():
+            raw_tech = row.get(name_column, '').strip().lower()
+            if raw_tech not in seen:
+                seen.add(raw_tech)
+                corrected = NAME_CORRECTIONS.get(raw_tech, raw_tech)
+                parts = corrected.strip().split()
+                if len(parts) >= 2:
+                    tech_display = f"{parts[0].capitalize()} {parts[1][0].upper()}"
+                else:
+                    tech_display = corrected.capitalize()
+
+                formatted_time = format_time_str(row['TimeParsed'])
+                name_display = row['Name'].strip().title()
+                type_display = row['Type'].strip().title()
+                addr_display = row['Address'].strip().title()
+                wo_display = f"WO {str(row['WO']).strip()}"
+
+                line = f"{tech_display} - {formatted_time} - {name_display} - {type_display} - {addr_display} - {wo_display}"
+                first_jobs[date].append(line)
+
+    return first_jobs
+
 
 def login_failed(driver):
     try:
@@ -279,6 +369,43 @@ def process_jobs_from_list(job_list):
 
     process_workorders(temp_path)
 
+def verify_work_order_page(driver, wo_number, url, max_attempts=3):
+    for attempt in range(1, max_attempts + 1):
+        try:
+            if not driver.current_url.strip().endswith(wo_number):
+                driver.get(url)
+            displayed_wo_elem = WebDriverWait(driver, 10, poll_frequency=0.5).until(
+                EC.presence_of_element_located((By.XPATH, "//td[contains(text(), 'Work Order #:')]/following-sibling::td"))
+            )
+            if displayed_wo_elem.text.strip() == wo_number:
+                return True
+        except Exception:
+            log(f"🟡 Attempt {attempt}: Unable to verify WO #{wo_number}")
+        time.sleep(5)
+    return False
+
+def find_matching_dropdown_option(select, dropdown_value):
+    dropdown_value = dropdown_value.lower()
+    if dropdown_value in NAME_CORRECTIONS:
+        corrected_name = NAME_CORRECTIONS[dropdown_value]
+        for opt in select.options:
+            if opt.text.strip().lower() == corrected_name.lower():
+                return opt.text
+
+    parts = dropdown_value.strip().split()
+    if not parts:
+        return None
+    first_name = parts[0]
+    last_initial = parts[1][0] if len(parts) > 1 else ""
+
+    for opt in select.options:
+        full_parts = opt.text.lower().strip().split()
+        if len(full_parts) >= 2 and full_parts[0].startswith(first_name) and full_parts[1][0] == last_initial:
+            return opt.text
+
+    potential_matches = [opt.text for opt in select.options if opt.text.lower().startswith(first_name)]
+    return potential_matches[0] if len(potential_matches) == 1 else None
+
 def process_workorders(file_path):
     gui_log(f"\nProcessing file: {file_path}")
     df_raw = pd.read_excel(file_path)
@@ -342,31 +469,8 @@ def process_workorders(file_path):
         log(f"\n🔗 Opening WO #{wo_number} — {url}")
         driver.get(url)
 
-        max_attempts = 3
-        matched_wo = False
-
-        for attempt in range(1, max_attempts + 1):
-            try:
-                if not driver.current_url.strip().endswith(wo_number):
-                    driver.get(url)
-
-                displayed_wo_elem = WebDriverWait(driver, 10, poll_frequency=0.5).until(
-                    EC.presence_of_element_located((By.XPATH, "//td[contains(text(), 'Work Order #:')]/following-sibling::td"))
-                )
-                displayed_wo = displayed_wo_elem.text.strip()
-
-                if displayed_wo == wo_number:
-                    matched_wo = True
-                    break
-                else:
-                    log(f"🟡 Attempt {attempt}: Page shows WO #{displayed_wo}, expected #{wo_number}. Retrying...")
-            except Exception:
-                log(f"🟡 Attempt {attempt}: Unable to find WO number on page. Retrying...")
-
-            time.sleep(5)
-
-        if not matched_wo:
-            gui_log(f"❌ Failed to verify correct WO after 3 attempts — skipping WO #{wo_number}")
+        if not verify_work_order_page(driver, wo_number, url):
+            gui_log(f"❌ Failed to verify WO #{wo_number}. Skipping.")
             continue
 
         desired_contractor_label = SELECTED_CONTRACTOR.get()
@@ -475,43 +579,37 @@ def process_workorders(file_path):
     gui_log(f"\n✅ Done processing work orders.")
     gui_log(f"🗂️ Output saved to: {log_path}")
 
-    # === FIRST JOB SUMMARY
-    first_jobs = defaultdict(list)
-    if not filtered_df.empty:
-        grouped = filtered_df.copy()
+    first_jobs = build_first_jobs_summary(filtered_df, name_column="Dropdown")
+    show_first_jobs(first_jobs)
 
-        def parse_flexible_time(t):
-            t = t.strip().lower().replace('.', '')
-            formats = ("%I:%M %p", "%I %p", "%I%p", "%H:%M", "%H:%M:%S")
-            for fmt in formats:
-                try:
-                    return datetime.strptime(t, fmt)
-                except:
-                    continue
-            return pd.NaT
+def parse_undated_tabular_with_wo(lines):
+    jobs = []
+    for line in lines:
+        parts = re.split(r'\t+|\s{2,}', line.strip())
+        if len(parts) < 6:
+            continue
 
-        grouped['TimeParsed'] = grouped['Time'].apply(lambda x: parse_flexible_time(str(x)))
-        failed_times = grouped[grouped['TimeParsed'].isna()]
-        if not failed_times.empty:
-            log("\n⚠️ Could not parse the following time values:")
-            log(failed_times[['Time']])
+        time = parts[0]
+        name = parts[1]
+        job_type = parts[2]
+        wo_field = parts[3]
+        address = parts[4]
+        tech = parts[5]
 
-        grouped = grouped.dropna(subset=['TimeParsed', 'Dropdown', 'Name', 'Type', 'Address', 'WO'])
+        wo_match = re.search(r"\bWO\s*(\d{6})\b", wo_field)
+        if not wo_match:
+            continue
 
-        for date, group in grouped.groupby(grouped['Date'].dt.date):
-            group = group.sort_values('TimeParsed')
-            seen = set()
-            for _, row in group.iterrows():
-                tech = row['Dropdown']
-                if tech not in seen:
-                    seen.add(tech)
-                    formatted_time = row['TimeParsed'].strftime("%I%p").lstrip("0").lower()
-                    candidate_line = f"{tech} - {formatted_time} - {row['Name']} - {row['Type']} - {row['Address']} - WO {row['WO']}"
-                    first_jobs[date].append(candidate_line)
-
-    want_first = input("\nOutput First Jobs? (y/n): ").strip().lower()
-    if want_first == 'y':
-        show_first_jobs(first_jobs)
+        jobs.append({
+            "Date": "",  # no date in this format
+            "Time": time.strip(),
+            "Name": name.strip(),
+            "Type": job_type.strip(),
+            "WO": wo_match.group(1),
+            "Address": address.strip(),
+            "Tech": tech.strip()
+        })
+    return jobs
 
 def assign_jobs_from_dataframe(df):
     gui_log(f"Processing {len(df)} work orders from pasted text...")
@@ -561,26 +659,10 @@ def assign_jobs_from_dataframe(df):
         except:
             pass  # no error block found, continue
 
-        matched_wo = False
-        for attempt in range(1, 4):
-            try:
-                if not driver.current_url.strip().endswith(wo_number):
-                    driver.get(url)
-
-                displayed_wo_elem = WebDriverWait(driver, 10, poll_frequency=0.5).until(
-                    EC.presence_of_element_located((By.XPATH, "//td[contains(text(), 'Work Order #:')]/following-sibling::td"))
-                )
-                displayed_wo = displayed_wo_elem.text.strip()
-                if displayed_wo == wo_number:
-                    matched_wo = True
-                    break
-            except Exception:
-                log(f"🟡 Attempt {attempt}: Unable to find WO number. Retrying...")
-                time.sleep(5)
-
-        if not matched_wo:
+        if not verify_work_order_page(driver, wo_number, url):
             gui_log(f"❌ Failed to verify WO #{wo_number}. Skipping.")
             continue
+
 
         desired_contractor_label = SELECTED_CONTRACTOR.get()
         desired_contractor_full = CONTRACTOR_LABELS.get(desired_contractor_label)
@@ -680,7 +762,6 @@ def parse_dated_tabular_with_city(lines):
     print(f"[✅ Parsed] {len(jobs)} valid job(s) from dated tabular format.")
     return jobs
 
-
 def assign_contractor(driver, wo_number, desired_contractor_full):
     try:
         # 🧠 Trigger the assignment UI manually using JavaScript
@@ -738,12 +819,50 @@ def assign_contractor(driver, wo_number, desired_contractor_full):
     except Exception as e:
         gui_log(f"❌ Contractor assignment process failed for WO #{wo_number}: {e}")
 
+def parse_dmy_tabular_variant(lines):
+    jobs = []
+    print("[DEBUG] Triggering parse_dmy_tabular_variant()")
+    for i, line in enumerate(lines):
+        parts = re.split(r'\t+|\s{2,}', line.strip())
+        original_parts = parts.copy()
+
+        if len(parts) == 7 and re.match(r"\d{1,2}:\d{2} ?[APap][Mm] .+", parts[1]):
+            # Split the hybrid time-name field
+            match = re.match(r"(\d{1,2}:\d{2} ?[APap][Mm])\s+(.+)", parts[1])
+            if match:
+                time_val = match.group(1)
+                name_val = match.group(2)
+                parts = [parts[0], time_val, name_val] + parts[2:]
+
+        if len(parts) != 8:
+            print(f"[WARN] Skipping line with insufficient parts: {original_parts}")
+            continue
+
+        date, time, name, job_type, wo_field, address, city, tech = parts
+
+        wo_match = re.search(r"\bWO\s*(\d{6})\b", wo_field)
+        if not wo_match:
+            print(f"[WARN] Skipping line with invalid WO: {wo_field}")
+            continue
+
+        jobs.append({
+            "Date": date.strip(),
+            "Time": time.strip(),
+            "Name": name.strip(),
+            "Type": job_type.strip(),
+            "WO": wo_match.group(1),
+            "Address": f"{address.strip()}, {city.strip()}",
+            "Tech": tech.strip()
+        })
+
+    return jobs
+
 def looks_like_grouped_tech_date_format(lines):
     date_pattern = re.compile(r"\d{1,2}[-/]\d{1,2}([-/]\d{2,4})?")
     for i in range(len(lines) - 1):
         name_line = lines[i].strip()
         date_line = lines[i + 1].strip()
-        if name_line and not name_line.isupper() and date_pattern.match(date_line):
+        if name_line.isalpha() and date_pattern.match(date_line):
             return True
     return False
 
@@ -789,6 +908,21 @@ def reformat_contractor_text(text):
         print("[DEBUG] Triggering parse_dated_tabular_with_city()")
         return parse_dated_tabular_with_city(lines)
 
+    def detect_undated_tabular_with_wo(lines):
+        valid_lines = 0
+        for line in lines[:5]:
+            parts = re.split(r'\t+|\s{2,}', line.strip())
+            if len(parts) >= 6 and any("WO" in p for p in parts):
+                valid_lines += 1
+        return valid_lines >= 4
+    
+    # Match d-MMM formats like '2-May'
+    dmy_pattern = re.compile(r"^\d{1,2}-[A-Za-z]{3}$")
+    if all(dmy_pattern.match(re.split(r'\t+|\s{2,}', l)[0]) for l in lines[:3]):
+        print("[DEBUG] Triggering parse_dmy_tabular_variant()")
+        return parse_dmy_tabular_variant(lines)
+
+
     is_grouped_inline_with_tech = all("WO" in l and l.count(" - ") >= 6 for l in lines[:5])
     date_pattern = re.compile(r"\d{1,2}/\d{1,2}/\d{4}")
     date_alt_pattern = re.compile(r"\d{1,2}-[A-Za-z]{3}")  # 21-Apr format
@@ -801,12 +935,18 @@ def reformat_contractor_text(text):
         return name.capitalize() if name.isupper() else name
 
     date_found = False
+    # Detect format early to avoid fallback hijacking
+    if looks_like_grouped_tech_date_format(lines):
+        print("[DEBUG] Triggering parse_grouped_tech_date_schedule()")
+        return parse_grouped_tech_date_schedule(lines, selected_date=None)
+
+    if detect_undated_tabular_with_wo(lines):
+        print("[DEBUG] Triggering parse_undated_tabular_with_wo()")
+        return parse_undated_tabular_with_wo(lines)
+
     for line in lines:
         if not line:
             continue
-
-        if looks_like_grouped_tech_date_format(lines):
-            return parse_grouped_tech_date_schedule(lines, selected_date=None)
 
         # Handle SubT format
         parts = re.split(r"\t+| {2,}", line)
@@ -815,10 +955,12 @@ def reformat_contractor_text(text):
             raw_time = parts[1].strip()
             name = parts[2].strip()
             job_type = parts[3].strip()
-            wo = parts[4].strip()
+            wo_field = parts[4].strip()
             address = parts[5].strip()
             city = parts[6].strip()
             tech = format_tech_name(parts[7].strip())
+
+            wo = re.search(r"\bWO\s*(\d{6})\b", wo_field)
 
             try:
                 if "-" in raw_date and len(raw_date.split("-")) == 2:
@@ -925,6 +1067,44 @@ def reformat_contractor_text(text):
     if all('\t' in line for line in lines[:3]) and len(re.split(r'\t+', lines[0])) == 7:
         return parse_subt_tabular_variant(lines)
     
+    if any(re.match(r"^\d{1,2}[-/]\d{1,2}[-/]\d{2,4}$", line) for line in lines) and any("WO" in line and re.search(r"—|\-", line) for line in lines):
+        print("[DEBUG] Triggering parse_time_prefixed_format_with_date_header()")
+        return parse_time_prefixed_format_with_date_header(lines)
+
+    return jobs
+
+def parse_time_prefixed_format_with_date_header(lines):
+    jobs = []
+    current_date = None
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        # If line looks like a standalone date (e.g. "5-2-25")
+        if re.match(r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}", line):
+            current_date = line.replace('/', '-')
+            continue
+
+        # Match job lines like: "10:00 - Name - Account - Type - Address - WO ###### — Tech"
+        job_match = re.match(
+            r"(?P<time>\d{1,2}:\d{2})\s*-\s*(?P<name>.+?)\s*-\s*(?P<account>\d{4}-\d{4}-\d{4})\s*-\s*(?P<type>.+?)\s*-\s*(?P<address>.+?)\s*-\s*WO\s*(?P<wo>\d+)\s*[-—]\s*(?P<tech>.+)",
+            line
+        )
+
+        if job_match and current_date:
+            groups = job_match.groupdict()
+            jobs.append({
+                "Date": current_date,
+                "Time": groups["time"].strip(),
+                "Name": groups["name"].strip(),
+                "Account": groups["account"].strip(),
+                "Type": groups["type"].strip(),
+                "Address": groups["address"].strip(),
+                "WO": groups["wo"].strip(),
+                "Tech": groups["tech"].strip()
+            })
 
     return jobs
 
@@ -959,16 +1139,21 @@ def parse_subt_tabular_variant(lines):
 
 def parse_grouped_tech_date_schedule(lines, selected_date=None):
     jobs = []
+
     current_tech = None
     current_date = None
     current_time = None
 
+    time_block_pattern = re.compile(r"^\d{1,2}(:\d{2})?\s*(AM|PM)?$", re.IGNORECASE)
+    lines = [line for line in lines if not time_block_pattern.match(line.strip())]  
+
     date_pattern = re.compile(r"\d{1,2}[-/]\d{1,2}([-/]\d{2,4})?")
     time_pattern = re.compile(r"^\d{1,2}(?::\d{2})?\s?(AM|PM)?$", re.IGNORECASE)
     job_pattern = re.compile(
-        r"(?:- )?(?P<name>.+?) - (?P<account>\d{4}-\d{4}-\d{4}) - (?P<type>.+?) - (?P<address>.+?) - WO (?P<wo>\d+)",
+        r"(?P<time>\d{1,2}:\d{2})\s*-\s*(?P<name>.+?) - (?P<account>\d{4}-\d{4}-\d{4}) - (?P<type>.+?) - (?P<address>.+?) - WO (?P<wo>\d+)",
         re.IGNORECASE
     )
+
 
     for i, line in enumerate(lines):
         line = line.strip()
@@ -977,15 +1162,16 @@ def parse_grouped_tech_date_schedule(lines, selected_date=None):
 
         # Detect date (after name line)
         if date_pattern.match(line):
-            try:
-                parsed = datetime.strptime(line.replace('-', '/'), "%m/%d/%y")
-            except:
+            for fmt in ("%m/%d/%Y", "%m/%d/%y", "%m/%d"):
                 try:
-                    parsed = datetime.strptime(line.replace('-', '/'), "%m/%d")
-                    parsed = parsed.replace(year=datetime.today().year)
+                    parsed = datetime.strptime(line.replace('-', '/'), fmt)
+                    if fmt == "%m/%d":  # No year — assume current
+                        parsed = parsed.replace(year=datetime.today().year)
+                    break
                 except:
-                    continue
-            current_date = parsed.strftime("%-m/%-d/%y") if os.name != 'nt' else parsed.strftime("%#m/%#d/%y")
+                    parsed = None
+            if parsed:
+                current_date = parsed.strftime("%-m/%-d/%y") if os.name != 'nt' else parsed.strftime("%#m/%#d/%y")
             continue
 
         # Detect new tech name (assumes followed by a date)
@@ -1012,7 +1198,7 @@ def parse_grouped_tech_date_schedule(lines, selected_date=None):
             jobs.append({
                 "Tech": current_tech,
                 "Date": current_date,
-                "Time": current_time or "Unknown",
+                "Time": data["time"].strip(),
                 "Name": data["name"].strip(),
                 "Account": data["account"].strip(),
                 "Type": data["type"].strip(),
@@ -1101,7 +1287,6 @@ def save_cookies(driver, filename="cookies.pkl"):
     with cookie_lock:
         with open(filename, "wb") as f:
             pickle.dump(driver.get_cookies(), f)
-
 
 def load_cookies(driver, filename="cookies.pkl"):
     if not os.path.exists(filename): return False
@@ -1302,39 +1487,8 @@ def create_gui():
                 f.write("\n".join(log_lines))
 
             gui_log(f"✅ Done processing pasted text.")
-            #gui_log(f"🗂️ Output saved to: {log_path}")
 
-            # === FIRST JOB SUMMARY
-            first_jobs = defaultdict(list)
-
-            def parse_flexible_time(t):
-                t = t.strip().lower().replace('.', '')
-                formats = ("%I:%M %p", "%I %p", "%I%p", "%H:%M", "%H:%M:%S")
-                for fmt in formats:
-                    try:
-                        return datetime.strptime(t, fmt)
-                    except:
-                        continue
-                return pd.NaT
-
-            filtered_df['TimeParsed'] = filtered_df['Time'].apply(lambda x: parse_flexible_time(str(x)))
-            failed_times = filtered_df[filtered_df['TimeParsed'].isna()]
-            if not failed_times.empty:
-                log("\n⚠️ Could not parse the following time values:")
-                log(failed_times[['Time']])
-
-            filtered_df = filtered_df.dropna(subset=['TimeParsed', 'Name', 'Type', 'Address', 'WO'])
-
-            for date, group in filtered_df.groupby(filtered_df['Date'].dt.date):
-                group = group.sort_values('TimeParsed')
-                seen = set()
-                for _, row in group.iterrows():
-                    tech = row.get('Dropdown') or row.get('Tech', '')
-                    if tech not in seen:
-                        seen.add(tech)
-                        formatted_time = row['TimeParsed'].strftime("%I%p").lstrip("0").lower()
-                        line = f"{tech} - {formatted_time} - {row['Name']} - {row['Type']} - {row['Address']} - WO {row['WO']}"
-                        first_jobs[date].append(line)
+            first_jobs = build_first_jobs_summary(filtered_df, name_column="Tech")
 
             if WANT_FIRST_JOBS.get():
                 app.after(0, lambda: show_first_jobs(first_jobs))
