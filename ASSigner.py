@@ -835,66 +835,119 @@ def clear_first_time_overlays(driver):
             time.sleep(0.25)
     log("❌ Could not switch to MainView iframe.")
 
-# ===== Contractor Parsers (WIP) =====
+def normalize_subt_multiline_format(lines):
+    normalized = []
+    buffer = []
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        # Auto-join if a full job row is pasted already
+        if '\t' in line and line.count('\t') >= 5 and re.match(r"\d{1,2}-[A-Za-z]{3}", line):
+            normalized.append(line)
+            continue
+
+        buffer.append(line)
+
+        # If we have 3 lines (Date, Time, Job Row), normalize
+        if len(buffer) == 3:
+            date = buffer[0]
+            time = buffer[1]
+            details = buffer[2]
+
+            parts = [p.strip() for p in details.split('\t') if p.strip()]
+            if len(parts) < 4:
+                print(f"[SKIP] Malformed job: {buffer}")
+                buffer = []
+                continue
+
+            name = parts[0]
+            job_type = parts[1]
+            wo = parts[2]
+            address = parts[3]
+            tech = parts[-1] if len(parts) >= 5 else ""
+
+            normalized.append(f"{date}\t{time}\t{name}\t{job_type}\t{wo}\t{address}\t{tech}")
+            buffer.clear()
+
+        elif len(buffer) > 3:
+            print(f"[SKIP] Malformed job block (too many lines): {buffer}")
+            buffer.clear()
+
+    return normalized
+# ===== Contractor Parsers =====
 
 def parse_subterraneus_format(lines):
     jobs = []
     current_date = None
     current_time = None
 
+    lines = normalize_subt_multiline_format(lines)
+    print(f"[DEBUG] Total normalized lines to parse: {len(lines)}")
+    print(f"[DEBUG] Example normalized line: {lines[0] if lines else 'None'}")
+
     for i, line in enumerate(lines):
         line = line.strip()
         if not line:
             continue
 
-        # only skip lines that are exactly a date (e.g. “5-May” or “5/5”)
-        if re.fullmatch(r"\d{1,2}-[A-Za-z]{3}", line) \
-           or re.fullmatch(r"\d{1,2}/\d{1,2}", line):
+        # Handle date-only lines (e.g. "5-May" or "5/5")
+        if re.fullmatch(r"\d{1,2}-[A-Za-z]{3}", line) or re.fullmatch(r"\d{1,2}/\d{1,2}", line):
             current_date = line
             continue
 
-        # only skip lines that are exactly a time (e.g. “8:00 AM” or “15:30”)
+        # Handle time-only lines (e.g. "8:00 AM" or "15:30")
         if re.fullmatch(r"\d{1,2}:\d{2}\s?(?:AM|PM)?", line, re.IGNORECASE):
             current_time = line
             continue
 
-        # now real job lines fall through…
-        parts = re.split(r'\t+|\s{2,}', line)
+        # Try to split by tabs first (new format)
+        parts = line.split('\t')
+        print(f"[DEBUG] Split parts: {parts}")
+        if len(parts) < 6:
+            # Fallback: try splitting by 2+ spaces
+            parts = re.split(r'\s{2,}', line)
+
         if len(parts) < 6:
             print(f"[SKIP] Line malformed or incomplete: {line}")
             continue
 
         try:
-            # Guess field mapping
-            date_str = parts[0] if re.match(r"\d{1,2}-[A-Za-z]{3}|\d{1,2}/\d{1,2}", parts[0]) else current_date
-            time_str = parts[1] if re.match(r"\d{1,2}:\d{2}", parts[1]) else current_time
-            name = parts[2]
-            job_type = parts[3]
-            wo_field = parts[4]
-            address = parts[5]
-
-            # Optional: city and tech
-            city = parts[6] if len(parts) > 6 else ""
-            tech = parts[7] if len(parts) > 7 else ""
-
-            # Extract WO number
-            wo_match = re.search(r"\b(\d{6})\b", wo_field)
-            if not wo_match:
-                print(f"[SKIP] Invalid WO in: {line}")
+            parts = line.strip().split('\t')
+            if len(parts) < 6:
+                print(f"[SKIP] Malformed normalized line: {line}")
                 continue
 
-            wo_number = wo_match.group(1)
+            date_str = parts[0].strip()
+            time_str = parts[1].strip()
+            name = parts[2].strip()
+            job_type = parts[3].strip()
+            wo_field = parts[4].strip()
+            address = parts[5].strip()
+
+            non_empty_tail = [p.strip() for p in parts[6:] if p.strip()]
+            tech = non_empty_tail[-1] if non_empty_tail else ""
+
+            if not tech:
+                print(f"[SKIP] Missing tech for: {line}")
+                continue
+
+            wo_match = re.search(r"\b(\d{6})\b", wo_field)
+            if not wo_match:
+                print(f"[SKIP] Invalid WO: {line}")
+                continue
 
             jobs.append({
-                "Date": date_str.strip(),
-                "Time": time_str.strip(),
-                "Name": name.strip(),
-                "Type": job_type.strip(),
-                "WO": wo_number.strip(),
-                "Address": f"{address.strip()}, {city.strip()}",
-                "Tech": tech.strip()
+                "Date": date_str,
+                "Time": time_str,
+                "Name": name,
+                "Type": job_type,
+                "WO": wo_match.group(1),
+                "Address": address,
+                "Tech": tech
             })
-
         except Exception as e:
             print(f"[ERROR] Failed to parse line: {line} — {e}")
 
@@ -1230,6 +1283,8 @@ def create_gui():
                 gui_log("No matching jobs found.")
                 return
             
+            df['Dropdown'] = df['Tech']  # so it gets matched properly
+
             log(f"📦 Runtime headless check (before assign): {HEADLESS_MODE.get()}")
             def threaded_assign():
                 assign_jobs_from_dataframe(filtered_df)
