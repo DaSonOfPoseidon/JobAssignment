@@ -1179,7 +1179,7 @@ CONTRACTOR_FORMAT_PARSERS = {
 def create_gui():
     app = TkinterDnD.Tk()
     app.title("Drop Excel File or Paste Schedule Text")
-    app.geometry("600x400")
+    app.geometry("600x800")
 
     label = tk.Label(app, text="Drag and drop your Excel file here", width=60, height=5, bg="lightgray")
     label.pack(padx=10, pady=10)
