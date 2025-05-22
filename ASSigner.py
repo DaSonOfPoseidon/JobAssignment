@@ -74,6 +74,8 @@ CONTRACTOR_NAME_CORRECTIONS = {
     },
     "Tex-Star Communications": {
         "robby": "Robby Cowart",
+        "david": "David Villarreal",
+        "ryan": "Ryan Sharp"
     },
     "Pifer Quality Communications": {
         "caleb": "Caleb Pifer",
@@ -1072,8 +1074,15 @@ def parse_texstar_format(lines):
     jobs = []
     current_date = None
 
+    # Original pattern
     job_line_pattern = re.compile(
         r"(\d{1,2}:\d{2})\s*-\s*(.*?)\s*-\s*[\d\-]+?\s*-\s*(.*?)\s*-\s*(.*?)\s*-\s*WO\s*(\d+)\s*[—-]{1,2}\s*(\w+)",
+        re.IGNORECASE
+    )
+
+    # New alternate pattern
+    job_line_alt_pattern = re.compile(
+        r"(\d{1,2}:\d{2})\s*-\s*(.*?)\s*-\s*\d{4}-\d{4}-\d{4}\s*-\s*(.*?)\s*-\s*(.*?)\s*-\s*WO\s*(\d+)\s+(\w+)",
         re.IGNORECASE
     )
 
@@ -1082,12 +1091,12 @@ def parse_texstar_format(lines):
         if not line:
             continue
 
-        # Handle the date line
+        # Capture date
         if re.match(r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}", line):
             current_date = line
             continue
 
-        match = job_line_pattern.match(line)
+        match = job_line_pattern.match(line) or job_line_alt_pattern.match(line)
         if not match:
             continue
 
