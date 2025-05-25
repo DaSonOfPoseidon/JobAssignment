@@ -2,6 +2,8 @@ import sys
 import os
 import re
 import time
+import platform
+import shutil
 import tempfile
 import pickle
 from datetime import datetime, timedelta
@@ -22,6 +24,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import Select, WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../embedded_python/lib")))
 
 # === CONFIGURATION ===
@@ -75,7 +78,10 @@ CONTRACTOR_NAME_CORRECTIONS = {
     "Tex-Star Communications": {
         "robby": "Robby Cowart",
         "david": "David Villarreal",
-        "ryan": "Ryan Sharp"
+        "ryan": "Ryan Sharp",
+        "robbie": "Robby Cowart",
+        "tommu": "Tommy Estrada",
+        "frank": "Francisco Morales"
     },
     "Pifer Quality Communications": {
         "caleb": "Caleb Pifer",
@@ -91,8 +97,6 @@ CONTRACTOR_NAME_CORRECTIONS = {
         "brandon": "Brandon Turner"
     }
 }
-
-
 
 log_lines = []
 
@@ -430,18 +434,8 @@ def process_workorders(file_path):
         return
 
     gui_log(f"\nProcessing {len(filtered_df)} work orders...")
-    options = webdriver.ChromeOptions()
-    if is_headless():
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--disable-extensions")
-        options.add_argument("--headless=new")
-        options.add_argument("--window-size=1920,1080")
-    else:
-        options.add_argument("--start-maximized")
     
-    driver = webdriver.Chrome(service=Service(CHROMEDRIVER_PATH), options=options)
+    driver = create_driver(is_headless())
     handle_login(driver)
 
     for index, row in filtered_df.iterrows():
@@ -542,22 +536,59 @@ def process_workorders(file_path):
     first_jobs = build_first_jobs_summary(filtered_df, name_column="Dropdown")
     show_first_jobs(first_jobs)
 
+def create_driver(headless: bool = True) -> webdriver.Chrome:
+    # 1) Locate the browser binary
+    chrome_bin = (
+        os.environ.get("CHROME_BIN")
+        or shutil.which("google-chrome")
+        or shutil.which("chrome")
+        or shutil.which("chromium-browser")
+        or shutil.which("chromium")
+    )
+    if not chrome_bin and platform.system() == "Windows":
+        # Probe standard Windows install paths
+        for p in (
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        ):
+            if os.path.exists(p):
+                chrome_bin = p
+                break
+
+    if not chrome_bin or not os.path.exists(chrome_bin):
+        raise RuntimeError(
+            "Chrome/Chromium binary not found—install it or set CHROME_BIN"
+        )
+
+    # 2) Build ChromeOptions
+    opts = webdriver.ChromeOptions()
+    opts.binary_location = chrome_bin
+    if headless:
+        opts.add_argument("--headless=new")
+        opts.add_argument("--disable-gpu")
+        opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+    opts.page_load_strategy = "eager"
+
+    # 3) Pick driver based on platform
+    system = platform.system()
+    arch = platform.machine().lower()
+    if system == "Linux" and ("arm" in arch or "aarch64" in arch):
+        # Raspberry Pi / ARM Linux → use distro’s chromedriver
+        driver_path = "/usr/bin/chromedriver"
+        if not os.path.exists(driver_path):
+            raise RuntimeError("ARM chromedriver not found; please `apt install chromium-driver`")
+        service = Service(driver_path)
+    else:
+        # x86 Linux or Windows → download via webdriver-manager
+        service = Service(ChromeDriverManager().install())
+
+    # 4) Launch
+    return webdriver.Chrome(service=service, options=opts)
+
 def assign_jobs_from_dataframe(df):
     gui_log(f"Processing {len(df)} work orders from pasted text...")
-
-    options = webdriver.ChromeOptions()
-    if is_headless():
-        options.add_argument("--headless=new")  # or just "--headless" if issues
-        options.add_argument("--window-size=1920,1080")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--disable-extensions")
-
-    else:
-        options.add_argument("--start-maximized")
-
-    driver = webdriver.Chrome(service=Service(CHROMEDRIVER_PATH), options=options)
+    driver = create_driver(is_headless())
     handle_login(driver)
 
     for index, row in df.iterrows():
