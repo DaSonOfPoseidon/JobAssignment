@@ -6,7 +6,7 @@ import platform
 import shutil
 import tempfile
 import pickle
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from collections import defaultdict
 from tkinter import messagebox
 from dotenv import load_dotenv, set_key
@@ -16,6 +16,7 @@ from threading import Thread
 import threading
 import tkinter as tk
 from tkcalendar import DateEntry
+from email_reader import connect_imap, find_matching_msg_nums, fetch_body, extract_relevant_section
 from tkinter import simpledialog
 from tkinter import ttk
 from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -29,7 +30,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../e
 
 # === CONFIGURATION ===
 SHOW_ALL_OUTPUT_IN_CONSOLE = True
-CHROMEDRIVER_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "chromedriver.exe"))
 LOG_FOLDER = os.path.join(os.path.dirname(__file__), "..", "logs")
 os.makedirs(LOG_FOLDER, exist_ok=True)
 load_dotenv(dotenv_path=".env")
@@ -567,7 +567,11 @@ def create_driver(headless: bool = True) -> webdriver.Chrome:
         opts.add_argument("--headless=new")
         opts.add_argument("--disable-gpu")
         opts.add_argument("--no-sandbox")
+        opts.add_argument("--disable-usb-keyboard-detect")
+        opts.add_argument("--disable-hid-detection")
+    opts.add_argument("--log-level=3")
     opts.add_argument("--disable-dev-shm-usage")
+    opts.set_capability("unhandledPromptBehavior", "dismiss")
     opts.page_load_strategy = "eager"
 
     # 3) Pick driver based on platform
@@ -1358,6 +1362,28 @@ def create_gui():
     app.mainloop()
 
 if __name__ == "__main__":
+    target_env = os.getenv("EMAIL_TARGET_DATE")  # e.g. “2025-05-27”
+    if target_env:
+        try:
+            target_date = datetime.fromisoformat(target_env).date()
+        except ValueError:
+            print("Invalid EMAIL_TARGET_DATE; should be YYYY-MM-DD")
+    else:
+        target_date = date.today() + timedelta(days=1)
+    imap = None
+    try:
+        imap = connect_imap()
+        msg_nums = find_matching_msg_nums(imap, target_date)
+        print(f"[Email] Found {len(msg_nums)} message(s) matching {target_date}:\n")
+        for num in msg_nums:
+            body = extract_relevant_section(fetch_body(imap, num))
+            print(f"--- Email #{num.decode()} ---\n{body}\n")
+    except Exception as e:
+        print(f"[Email] Error: {e}")
+    finally:
+        if imap:
+            try: imap.logout()
+            except: pass
     try:
         create_gui()
     except Exception as e:
