@@ -960,8 +960,8 @@ def parse_subterraneus_format(lines):
             date_str = parts[0].strip()
             time_str = parts[1].strip()
             name = parts[2].strip()
-            job_type = parts[3].strip()
-            wo_field = parts[4].strip()
+            job_type = parts[4].strip()
+            wo_field = parts[3].strip()
             address = parts[5].strip()
 
             non_empty_tail = [p.strip() for p in parts[6:] if p.strip()]
