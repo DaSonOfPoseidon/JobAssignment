@@ -100,6 +100,26 @@ CONTRACTOR_NAME_CORRECTIONS = {
 
 log_lines = []
 
+class Assigner:
+    def __init__(self, num_threads=8):
+        self.num_threads = num_threads
+
+    def parse_jobs(self, lines):
+        # dispatch to your existing per-contractor parsers
+        jobs = []
+        for label, parser in CONTRACTOR_FORMAT_PARSERS.items():
+            # detect label on the fly or pass it in
+            parsed = parser(lines)
+            jobs.extend(parsed)
+        return jobs
+
+    def first_jobs(self, jobs):
+        df = pd.DataFrame(jobs)
+        assign_jobs_from_dataframe(df)
+        summary = build_first_jobs_summary(df)
+        # flatten summary into a list of lines
+        return [line for lines in summary.values() for line in lines]
+
 def log(message):
     log_lines.append(message)
     if SHOW_ALL_OUTPUT_IN_CONSOLE :
@@ -914,6 +934,26 @@ def normalize_subt_multiline_format(lines):
             buffer.clear()
 
     return normalized
+
+def parse_subt_line(fields):
+    # Assume fields is a list of columns from splitting the line
+    wo_regex = re.compile(r'^WO\s*\d{6}$', re.I)
+    type_idx, wo_idx = None, None
+
+    # Only check the likely columns
+    for idx in [3, 4]:
+        if wo_regex.match(fields[idx].strip()):
+            wo_idx = idx
+        else:
+            type_idx = idx
+
+    # Fallback if both are not found
+    if wo_idx is None or type_idx is None:
+        return None  # or handle as a parse error
+
+    job_type = fields[type_idx].strip()
+    wo = fields[wo_idx].strip().replace("WO", "").strip()
+    return job_type, wo
 # ===== Contractor Parsers =====
 
 def parse_subterraneus_format(lines):
@@ -957,11 +997,13 @@ def parse_subterraneus_format(lines):
                 print(f"[SKIP] Malformed normalized line: {line}")
                 continue
 
+            temp = parse_subt_line(parts)
+
             date_str = parts[0].strip()
             time_str = parts[1].strip()
             name = parts[2].strip()
-            job_type = parts[3].strip()
-            wo_field = parts[4].strip()
+            job_type = temp[0].strip()
+            wo_field = temp[1].strip()
             address = parts[5].strip()
 
             non_empty_tail = [p.strip() for p in parts[6:] if p.strip()]
@@ -1362,28 +1404,31 @@ def create_gui():
     app.mainloop()
 
 if __name__ == "__main__":
-    target_env = os.getenv("EMAIL_TARGET_DATE")  # e.g. “2025-05-27”
-    if target_env:
-        try:
-            target_date = datetime.fromisoformat(target_env).date()
-        except ValueError:
-            print("Invalid EMAIL_TARGET_DATE; should be YYYY-MM-DD")
-    else:
-        target_date = date.today() + timedelta(days=1)
-    imap = None
-    try:
-        imap = connect_imap()
-        msg_nums = find_matching_msg_nums(imap, target_date)
-        print(f"[Email] Found {len(msg_nums)} message(s) matching {target_date}:\n")
-        for num in msg_nums:
-            body = extract_relevant_section(fetch_body(imap, num))
-            print(f"--- Email #{num.decode()} ---\n{body}\n")
-    except Exception as e:
-        print(f"[Email] Error: {e}")
-    finally:
-        if imap:
-            try: imap.logout()
-            except: pass
+    # This all works it just takes a second to run and is not useful currently
+    #
+    #
+    # target_env = os.getenv("EMAIL_TARGET_DATE")  # e.g. “2025-05-27”
+    # if target_env:
+    #     try:
+    #         target_date = datetime.fromisoformat(target_env).date()
+    #     except ValueError:
+    #         print("Invalid EMAIL_TARGET_DATE; should be YYYY-MM-DD")
+    # else:
+    #     target_date = date.today() + timedelta(days=1)
+    # imap = None
+    # try:
+    #     imap = connect_imap()
+    #     msg_nums = find_matching_msg_nums(imap, target_date)
+    #     print(f"[Email] Found {len(msg_nums)} message(s) matching {target_date}:\n")
+    #     for num in msg_nums:
+    #         body = extract_relevant_section(fetch_body(imap, num))
+    #         print(f"--- Email #{num.decode()} ---\n{body}\n")
+    # except Exception as e:
+    #     print(f"[Email] Error: {e}")
+    # finally:
+    #     if imap:
+    #         try: imap.logout()
+    #         except: pass
     try:
         create_gui()
     except Exception as e:
