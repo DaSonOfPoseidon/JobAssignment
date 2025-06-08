@@ -12,7 +12,6 @@ from tkinter import messagebox
 from dotenv import load_dotenv, set_key
 import pandas as pd
 from rapidfuzz import fuzz
-from threading import Thread
 import threading
 import tkinter as tk
 from tkcalendar import DateEntry
@@ -28,11 +27,20 @@ from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../embedded_python/lib")))
 
+HERE         = os.path.abspath(os.path.dirname(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(HERE, os.pardir))
+OUTPUT_DIR   = os.path.join(PROJECT_ROOT, "Outputs")
+COOKIE_PATH  = os.path.join(PROJECT_ROOT, "cookies.pkl")
+ENV_PATH     = os.path.join(PROJECT_ROOT, ".env")
+LOG_FOLDER   = os.path.join(PROJECT_ROOT, "logs")
+
+# ensure folders exist
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(LOG_FOLDER, exist_ok=True)
+
 # === CONFIGURATION ===
 SHOW_ALL_OUTPUT_IN_CONSOLE = True
-LOG_FOLDER = os.path.join(os.path.dirname(__file__), "..", "logs")
-os.makedirs(LOG_FOLDER, exist_ok=True)
-load_dotenv(dotenv_path=".env")
+load_dotenv(dotenv_path=ENV_PATH)
 cookie_lock = threading.Lock()
 
 COLUMN_DATE = 0
@@ -1325,7 +1333,7 @@ def create_gui():
                 process_workorders(file_path)
             except Exception as e:
                 gui_log(f"❌ Could not process file: {e}")
-        Thread(target=threaded_process, daemon=True).start()
+        threading.Thread(target=threaded_process, daemon=True).start()
 
     def parse_text():
         raw_text = textbox.get("1.0", tk.END).strip()
@@ -1376,7 +1384,7 @@ def create_gui():
                 assign_jobs_from_dataframe(filtered_df)
                 gui_log("✅ All jobs have been assigned.")
 
-            Thread(target=threaded_assign, daemon=True).start()
+            threading.Thread(target=threaded_assign, daemon=True).start()
 
             # === Save log
             now = datetime.now()
