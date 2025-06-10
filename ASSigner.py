@@ -13,6 +13,7 @@ from dotenv import load_dotenv, set_key
 import pandas as pd
 from rapidfuzz import fuzz
 import threading
+import webbrowser
 import tkinter as tk
 from tkcalendar import DateEntry
 from email_reader import connect_imap, find_matching_msg_nums, fetch_body, extract_relevant_section
@@ -385,38 +386,84 @@ def save_env_credentials(USERNAME, PASSWORD):
     set_key(dotenv_path, "UNITY_USER", USERNAME)
     set_key(dotenv_path, "PASSWORD", PASSWORD)
 
+def jobs_to_html(first_jobs, company): #FIRST JOBS FORMAT
+    now = datetime.now()
+    timestamp = now.strftime("%I:%M%p, %m/%d").lower()
+    html_header = f"""
+    <div style="font-family: Apatos, Arial, sans-serif; font-size:12pt;">
+    <p>Please call into 163 for tech assistance - Please call 633 for dispatcher</p>
+    <p>
+    This is a reminder. Please make sure we are returning the HST's to the office once we are done using them.<br>
+    Please also make sure you are updating WO notes and completing the WO after completing the dispatch/install.
+    </p>
+    <p>As of {timestamp} the jobs are set as follows.....</p><br><br>
+    <h3 style="margin-bottom:0">{company} Contractors -</h3><br>
+    <ul style="margin-top:6px;">
+    """
+
+    lines = []
+    for day, jobs in first_jobs.items():
+        for job in jobs:
+            # <li> for bullet or <div> for block
+            lines.append(f"<div>{job}</div><br>")
+    html_footer = """
+    </ul>
+    <br>
+    <br>
+    <h3 style="margin-bottom:0">Internals -</h3><br>
+    <div>Brandon - 8am - </div><br>
+    <div>Cole - 8am - </div><br>
+    <div>Matt - 8am - </div><br>
+    <div>Tylor - 8am - </div>
+    </div>
+    """
+    
+    return html_header + "\n".join(lines) + html_footer
+
 def show_first_jobs(first_jobs):
     from tkinter import Toplevel, Scrollbar, Text, RIGHT, Y, END, Button
 
     popup = Toplevel()
     popup.title("First Jobs Summary")
-    popup.geometry("600x400")
+    popup.geometry("700x600")
 
-    text = Text(popup, wrap="word")
+    text = Text(popup, wrap="word", font=("Apatos", 11))
     scrollbar = Scrollbar(popup, command=text.yview)
     text.configure(yscrollcommand=scrollbar.set)
 
     text.pack(side="left", fill="both", expand=True)
     scrollbar.pack(side=RIGHT, fill=Y)
 
-    all_text = ""
+    # --- Custom Header Block ---
+    company = SELECTED_CONTRACTOR.get()
+    now = datetime.now()
+    timestamp = now.strftime("%I:%M%p, %m/%d").lower()
+    main_header = (
+        f"Please call into 163 for tech assistance - Please call 633 for dispatcher\n\n"
+        f"This is a reminder. Please make sure we are returning the HST's to the office once we are done using them. Please also make sure you are updating WO notes and completing the WO after completing the dispatch/install.\n\n"
+        f"As of {timestamp} the jobs are set as follows.....\n\n"
+        f"{company} Contractors - \n\n"
+    )
+    text.insert(END, main_header)
 
+    # --- Main Jobs Block ---
+    # Only show jobs for the selected contractor!
     for day, jobs in first_jobs.items():
-        all_text += f"{day.strftime('%A %m/%d/%Y')}\n"
         for j in jobs:
-            all_text += f"{j}\n"
-        all_text += "\n"
+            text.insert(END, f"{j}\n\n")
+        text.insert(END, "\n")
 
-    text.insert(END, all_text)
+    # --- Copy to clipboard button ---
     popup.clipboard_clear()
-    popup.clipboard_append(all_text.strip())
+    popup.clipboard_append(text.get("1.0", END).strip())
 
     def copy_to_clipboard():
         popup.clipboard_clear()
-        popup.clipboard_append(all_text.strip())
+        popup.clipboard_append(text.get("1.0", END).strip())
 
     copy_button = Button(popup, text="Copy to Clipboard", command=copy_to_clipboard)
     copy_button.pack(pady=5)
+
 
 def verify_work_order_page(driver, wo_number, url, max_attempts=3):
     for attempt in range(1, max_attempts + 1):
@@ -562,7 +609,9 @@ def process_workorders(file_path):
     gui_log(f"🗂️ Output saved to: {log_path}")
 
     first_jobs = build_first_jobs_summary(filtered_df, name_column="Dropdown")
-    show_first_jobs(first_jobs)
+    company = SELECTED_CONTRACTOR.get()
+    html_str = jobs_to_html(first_jobs, company)
+    save_and_open_html(html_str)
 
 def create_driver(headless: bool = True) -> webdriver.Chrome:
     # 1) Locate the browser binary
@@ -820,14 +869,14 @@ def is_headless():
 
 def save_cookies(driver, filename="cookies.pkl"):
     with cookie_lock:
-        with open(filename, "wb") as f:
+        with open(COOKIE_PATH, "wb") as f:
             pickle.dump(driver.get_cookies(), f)
 
 def load_cookies(driver, filename="cookies.pkl"):
-    if not os.path.exists(filename): return False
+    if not os.path.exists(COOKIE_PATH): return False
     try:
         with cookie_lock:
-            with open(filename, "rb") as f:
+            with open(COOKIE_PATH, "rb") as f:
                 cookies = pickle.load(f)
 
         driver.get("http://inside.sockettelecom.com/")
@@ -837,8 +886,16 @@ def load_cookies(driver, filename="cookies.pkl"):
         clear_first_time_overlays(driver)
         return True
     except Exception:
-        if os.path.exists(filename): os.remove(filename)
+        if os.path.exists(COOKIE_PATH): os.remove(COOKIE_PATH)
         return False
+
+def save_and_open_html(html_str, filename="FirstJobsSummary.html"):
+    # Write HTML to file
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(html_str)
+    # Open in the default browser (works everywhere)
+    file_url = 'file://' + os.path.realpath(filename)
+    webbrowser.open(file_url)
 
 def handle_login(driver):
     driver.get("http://inside.sockettelecom.com/")
@@ -1398,7 +1455,7 @@ def create_gui():
             first_jobs = build_first_jobs_summary(filtered_df, name_column="Tech")
 
             if WANT_FIRST_JOBS.get():
-                app.after(0, lambda: show_first_jobs(first_jobs))
+                app.after(0, lambda: save_and_open_html(jobs_to_html(first_jobs, SELECTED_CONTRACTOR.get())))
 
         except Exception as e:
             gui_log(f"❌ Error processing pasted text: {e}")
