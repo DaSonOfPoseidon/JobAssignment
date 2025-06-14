@@ -90,7 +90,8 @@ CONTRACTOR_NAME_CORRECTIONS = {
         "ryan": "Ryan Sharp",
         "robbie": "Robby Cowart",
         "tommu": "Tommy Estrada",
-        "frank": "Francisco Morales"
+        "frank": "Francisco Morales",
+        "marcus": "Demarcus Blackmon"
     },
     "Pifer Quality Communications": {
         "caleb": "Caleb Pifer",
