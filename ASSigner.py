@@ -246,7 +246,7 @@ def build_first_jobs_summary(df, name_column="Dropdown"):
     failed_times = df[df['TimeParsed'].isna()]
     if not failed_times.empty:
         log("\n⚠️ Could not parse the following time values:")
-        log(failed_times[['Time']])
+        log(failed_times[['Time']].to_string(index=False))
 
     df = df.dropna(subset=['TimeParsed', 'Name', 'Type', 'Address', 'WO'])
 
@@ -413,7 +413,9 @@ def jobs_to_html(first_jobs, company): #FIRST JOBS FORMAT
     <br>
     <h3 style="margin-bottom:0">Internals -</h3><br>
     <div>Brandon - 8am - </div><br>
+    <div>Billy - 8am - </div><br>
     <div>Cole - 8am - </div><br>
+    <div>Gladston - 8am - </div><br>
     <div>Matt - 8am - </div><br>
     <div>Tylor - 8am - </div>
     </div>
@@ -1158,56 +1160,60 @@ def parse_tgs_format(lines):
     return jobs
 
 def parse_pifer_format(lines):
+    clean_lines = []
+    for raw in lines:
+        if raw is None:
+            continue
+        clean_lines.append(str(raw))
+    lines = clean_lines
+    # 1) Merge only indented continuation lines (not tech / date / time)
+    merged = []
+    for raw in lines:
+        if raw.startswith((" ", "\t")) and not raw.strip().startswith("-"):
+            # continuation of the previous line
+            merged[-1] = merged[-1].rstrip() + " " + raw.strip()
+        else:
+            merged.append(raw)
+
+    # 2) Now parse as before
     jobs = []
-
-    current_tech = None
-    current_date = None
-    current_time = None
-
+    current_tech = current_date = current_time = None
     job_line_pattern = re.compile(
-        r"-\s*(.*?)\s*-\s*[\d\-]+?\s*-\s*(.*?)\s*-\s*(.*?)\s*-\s*WO\s*?(\d+)",
+        r"-\s*(?P<name>.*?)\s*-\s*[\d\-]+\s*-\s*(?P<type>.*?)\s*-\s*(?P<address>.*?)\s*-\s*WO\s*(?P<wo>\d+)",
         re.IGNORECASE
     )
 
-    for i, raw_line in enumerate(lines):
-        line = raw_line.strip()
+    for raw in merged:
+        line = raw.strip()
         if not line:
             continue
 
-        # Tech name (capitalized full names)
-        if re.fullmatch(r"[A-Z][a-z]+ [A-Z][a-z]+", line):
+        #  Technician header: two+ words, letters only (no digits), not starting with '-'
+        if not line.startswith("-") and not re.search(r"\d", line) and len(line.split()) >= 2:
             current_tech = line
             continue
 
-        # Date (e.g. 5-5-25 or 4/28/25)
-        if re.match(r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}", line):
+        # Detect a date (e.g. 6-17-25 or 06-17-2025)
+        if re.match(r"^\d{1,2}-\d{1,2}-\d{2,4}$", line):
             current_date = line
             continue
 
-        # Time block (e.g. 8AM, 10AM)
-        if re.fullmatch(r"\d{1,2}(:\d{2})?\s?(AM|PM)?", line, re.IGNORECASE):
-            current_time = format_time_str(line)
+        # Detect a time (e.g. 8AM, 10PM)
+        if re.match(r"^\d{1,2}(?:AM|PM)$", line, re.IGNORECASE):
+            current_time = line.upper()
             continue
 
-        # Full job line with embedded time (optional)
-        if re.match(r"\d{1,2}:\d{2}", line):
-            # Pull time from the front of the line
-            embedded_time = re.match(r"(\d{1,2}:\d{2})", line).group(1)
-            current_time = format_time_str(embedded_time)
-            # Remove time prefix before parsing
-            line = re.sub(r"^\d{1,2}:\d{2}\s*-\s*", "- ", line)
-
+        # Finally, a full job line
         match = job_line_pattern.search(line)
         if match:
-            name, job_type, address, wo_number = match.groups()
             jobs.append({
-                "Date": current_date,
-                "Time": current_time,
-                "Name": name.strip(),
-                "Type": job_type.strip(),
-                "WO": wo_number.strip(),
-                "Address": address.strip(),
-                "Tech": current_tech
+                "Date":    current_date,
+                "Time":    current_time,
+                "Tech":    current_tech,
+                "Name":    match.group("name").strip(),
+                "Type":    match.group("type").strip(),
+                "Address": match.group("address").strip(),
+                "WO":      match.group("wo").strip(),
             })
 
     print(f"[✅ Parsed] {len(jobs)} Pifer job(s)")
