@@ -467,7 +467,6 @@ def show_first_jobs(first_jobs):
     copy_button = Button(popup, text="Copy to Clipboard", command=copy_to_clipboard)
     copy_button.pack(pady=5)
 
-
 def verify_work_order_page(driver, wo_number, url, max_attempts=3):
     for attempt in range(1, max_attempts + 1):
         try:
@@ -1123,7 +1122,7 @@ def parse_tgs_format(lines):
             continue
 
         # Pure contractor header (e.g. "DONNELL")
-        if re.fullmatch(r"[A-Z]{3,}", line):
+        if re.fullmatch(r"(?:[A-Z]{3,}|[A-Z]+(?:\s+[A-Z]+)+)", line):
             current_tech = line
             continue
 
