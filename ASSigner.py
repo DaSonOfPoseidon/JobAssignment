@@ -2,10 +2,6 @@ import sys
 import os
 import re
 import time
-import platform
-import shutil
-import tempfile
-import pickle
 from datetime import datetime, timedelta, date
 from collections import defaultdict
 from tkinter import messagebox
@@ -20,12 +16,7 @@ from email_reader import connect_imap, find_matching_msg_nums, fetch_body, extra
 from tkinter import simpledialog
 from tkinter import ttk
 from tkinterdnd2 import DND_FILES, TkinterDnD
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import Select, WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../embedded_python/lib")))
 
 HERE         = os.path.abspath(os.path.dirname(__file__))
@@ -109,6 +100,44 @@ CONTRACTOR_NAME_CORRECTIONS = {
 }
 
 log_lines = []
+
+class PlaywrightDriver:
+    def __init__(self, headless=True, state_path=None, playwright=None, browser=None):
+        # Use state_path for session persistence if provided
+        from pathlib import Path
+        self.state_path = state_path or os.path.join(PROJECT_ROOT, "state.json")
+        if playwright and browser:
+            self._pw = playwright
+            self.browser = browser
+        else:
+            self._pw = sync_playwright().start()
+            self.browser = self._pw.chromium.launch(headless=headless)
+        # Load context (cookies/session)
+        if Path(self.state_path).exists():
+            self.context = self.browser.new_context(storage_state=self.state_path)
+        else:
+            self.context = self.browser.new_context()
+        self.page = self.context.new_page()
+        self.page.on("dialog", lambda dlg: dlg.dismiss())
+        self.page.route("**/*.{png,svg}", lambda route: route.abort())
+    def goto(self, url, timeout=5000, wait_until="load"):
+        try:
+            return self.page.goto(url, timeout=timeout, wait_until=wait_until)
+        except PlaywrightTimeout:
+            # fallback to full load
+            return self.page.goto(url, timeout=timeout, wait_until="load")
+    def save_state(self, path=None):
+        self.context.storage_state(path=path or self.state_path)
+    def __getattr__(self, name):
+        # So you can use driver.page APIs directly
+        return getattr(self.page, name)
+    def close(self):
+        self.context.close()
+        try:
+            self.browser.close()
+            self._pw.stop()
+        except Exception:
+            pass
 
 class Assigner:
     def __init__(self, num_threads=8):
@@ -275,57 +304,25 @@ def build_first_jobs_summary(df, name_column="Dropdown"):
 
     return first_jobs
 
-def normalize_name_key(name_input):
-    name_input = name_input.strip().lower()
-    parts = name_input.split()
-    if len(parts) == 1:
-        return parts[0]
-    elif len(parts) >= 2:
-        return f"{parts[0]} {parts[1][0]}"  # e.g., "jeff g"
-    return name_input
-
-def match_dropdown_option(select: Select, raw_name: str, contractor_full: str) -> str:
-    corrected_name = get_corrected_name(raw_name.strip(), contractor_full)
-    key_parts = corrected_name.lower().split()
-    first_name = key_parts[0] if key_parts else ""
-    last_initial = key_parts[1][0] if len(key_parts) > 1 else ""
-
-    # Full name exact match
-    for option in select.options:
-        if option.text.strip().lower() == corrected_name.lower():
-            return option.text
-
-    # First name + last initial match
-    for option in select.options:
-        full_parts = option.text.lower().strip().split()
-        if len(full_parts) >= 2 and full_parts[0].startswith(first_name) and full_parts[1][0] == last_initial:
-            return option.text
-
-    # Loose first name match
-    potential_matches = [opt.text for opt in select.options if opt.text.lower().startswith(first_name)]
-    if len(potential_matches) == 1:
-        return potential_matches[0]
-
-    return None  # fallback — caller must handle
-
 def get_corrected_name(name_input, contractor_full):
-    if not name_input:
+    def normalize_name_key(name_input):
+        name_input = name_input.strip().lower()
+        parts = name_input.split()
+        if len(parts) == 1:
+            return parts[0]
+        elif len(parts) >= 2:
+            return f"{parts[0]} {parts[1][0]}"
         return name_input
-
-    key = normalize_name_key(name_input)
     
-    # First, try contractor-specific corrections
+    key = normalize_name_key(name_input)
     corrections = CONTRACTOR_NAME_CORRECTIONS.get(contractor_full)
     if corrections and key in corrections:
         return corrections[key]
-    
-    # Fallback to first word if "brandon t" isn't found but "brandon" exists
     key_parts = key.split()
     if corrections and key_parts and key_parts[0] in corrections:
         return corrections[key_parts[0]]
-
-    # Try fuzzy match on contractor corrections
-    if corrections:
+    # Fuzzy match fallback
+    if corrections and key_parts:
         best_match = None
         highest_score = 0
         for known_key in corrections:
@@ -335,20 +332,54 @@ def get_corrected_name(name_input, contractor_full):
                 highest_score = score
         if best_match:
             return corrections[best_match]
-
-    # Fallback to default corrections
     fallback = CONTRACTOR_NAME_CORRECTIONS.get("default", {})
-    return fallback.get(key_parts[0], name_input)
+    if key_parts:
+        return fallback.get(key_parts[0], name_input)
+    return name_input
 
-def login_failed(driver):
-    try:
-        return (
-            "login.php" in driver.current_url
-            or "Username" in driver.page_source
-            or "Invalid username or password" in driver.page_source
-        )
-    except Exception:
-        return True  # if we can't read the page, assume failure
+def match_dropdown_option(options, tech_name_input, contractor_full):
+    """
+    Args:
+        options: list of option texts from Playwright's all_inner_texts()
+        tech_name_input: the technician name you want to assign (e.g., "Brandon T")
+        contractor_full: full contractor company name (for name corrections)
+    Returns:
+        The option text to select (exact match or best fuzzy match), or None if no match.
+    """
+    # Step 1: Correct the tech name for company-specific nicknames/variants
+    corrected_name = get_corrected_name(tech_name_input, contractor_full)
+    key_parts = corrected_name.lower().split()
+    first_name = key_parts[0] if key_parts else ""
+    last_initial = key_parts[1][0] if len(key_parts) > 1 else ""
+
+    # Step 2: Full exact match (case-insensitive)
+    for opt in options:
+        if opt.strip().lower() == corrected_name.lower():
+            return opt
+
+    # Step 3: First name + last initial match
+    for opt in options:
+        full_parts = opt.lower().strip().split()
+        if len(full_parts) >= 2 and full_parts[0] == first_name and full_parts[1][0] == last_initial:
+            return opt
+
+    # Step 4: Loose first name match, return if only one match
+    potential_matches = [opt for opt in options if opt.lower().startswith(first_name)]
+    if len(potential_matches) == 1:
+        return potential_matches[0]
+
+    # Step 5: Fuzzy match as fallback
+    highest_score = 0
+    best_opt = None
+    for opt in options:
+        score = fuzz.ratio(opt.lower(), corrected_name.lower())
+        if score > highest_score:
+            highest_score = score
+            best_opt = opt
+    if highest_score > 90:
+        return best_opt
+
+    return None  # If all else fails
 
 def check_env_or_prompt_login(log):
     username = os.getenv("UNITY_USER")
@@ -423,382 +454,82 @@ def jobs_to_html(first_jobs, company): #FIRST JOBS FORMAT
     
     return html_header + "\n".join(lines) + html_footer
 
-def show_first_jobs(first_jobs):
-    from tkinter import Toplevel, Scrollbar, Text, RIGHT, Y, END, Button
-
-    popup = Toplevel()
-    popup.title("First Jobs Summary")
-    popup.geometry("700x600")
-
-    text = Text(popup, wrap="word", font=("Apatos", 11))
-    scrollbar = Scrollbar(popup, command=text.yview)
-    text.configure(yscrollcommand=scrollbar.set)
-
-    text.pack(side="left", fill="both", expand=True)
-    scrollbar.pack(side=RIGHT, fill=Y)
-
-    # --- Custom Header Block ---
-    company = SELECTED_CONTRACTOR.get()
-    now = datetime.now()
-    timestamp = now.strftime("%I:%M%p, %m/%d").lower()
-    main_header = (
-        f"Please call into 163 for tech assistance - Please call 633 for dispatcher\n\n"
-        f"This is a reminder. Please make sure we are returning the HST's to the office once we are done using them. Please also make sure you are updating WO notes and completing the WO after completing the dispatch/install.\n\n"
-        f"As of {timestamp} the jobs are set as follows.....\n\n"
-        f"{company} Contractors - \n\n"
-    )
-    text.insert(END, main_header)
-
-    # --- Main Jobs Block ---
-    # Only show jobs for the selected contractor!
-    for day, jobs in first_jobs.items():
-        for j in jobs:
-            text.insert(END, f"{j}\n\n")
-        text.insert(END, "\n")
-
-    # --- Copy to clipboard button ---
-    popup.clipboard_clear()
-    popup.clipboard_append(text.get("1.0", END).strip())
-
-    def copy_to_clipboard():
-        popup.clipboard_clear()
-        popup.clipboard_append(text.get("1.0", END).strip())
-
-    copy_button = Button(popup, text="Copy to Clipboard", command=copy_to_clipboard)
-    copy_button.pack(pady=5)
-
 def verify_work_order_page(driver, wo_number, url, max_attempts=3):
     for attempt in range(1, max_attempts + 1):
         try:
-            if not driver.current_url.strip().endswith(wo_number):
-                driver.get(url)
-            displayed_wo_elem = WebDriverWait(driver, 10, poll_frequency=0.5).until(
-                EC.presence_of_element_located((By.XPATH, "//td[contains(text(), 'Work Order #:')]/following-sibling::td"))
-            )
-            if displayed_wo_elem.text.strip() == wo_number:
+            # If the URL isn't correct, navigate there
+            if not driver.page.url.strip().endswith(wo_number):
+                driver.goto(url)
+            # Wait for the Work Order # field to appear (no need for poll_frequency with Playwright)
+            selector = "//td[contains(text(), 'Work Order #:')]/following-sibling::td"
+            elem = driver.page.wait_for_selector(f"xpath={selector}", timeout=10_000)
+            # Check the displayed WO number
+            text = elem.inner_text().strip()
+            if text == wo_number:
                 return True
         except Exception:
             log(f"🟡 Attempt {attempt}: Unable to verify WO #{wo_number}")
         time.sleep(5)
     return False
 
-def process_workorders(file_path):
-    gui_log(f"\nProcessing file: {file_path}")
-    df_raw = pd.read_excel(file_path)
-
-    df = pd.DataFrame()
-    df['Date'] = df_raw.iloc[:, COLUMN_DATE].apply(flexible_date_parser)
-    df['Time'] = df_raw.iloc[:, COLUMN_TIME].astype(str)
-    df['Name'] = df_raw.iloc[:, COLUMN_NAME]
-    df['Type'] = df_raw.iloc[:, COLUMN_TYPE]
-    df['WO'] = df_raw.iloc[:, COLUMN_WO]
-    df['Address'] = df_raw.iloc[:, COLUMN_ADDRESS]
-    df['Dropdown'] = df_raw.iloc[:, COLUMN_DROPDOWN]
-
-    df = df.dropna(subset=['Date', 'WO', 'Dropdown'])
-
-    unique_dates = sorted(df['Date'].dropna().dt.date.unique())
-    start_date, end_date = ask_date_range(unique_dates)
-    if not start_date or not end_date:
-        gui_log("❌ No date range selected.")
-        return
-
-    filtered_df = df[(df['Date'].dt.date >= start_date) & (df['Date'].dt.date <= end_date)]
-
-    if filtered_df.empty:
-        gui_log("No matching jobs found for that date range.")
-        input("\nPress Enter to close...")
-        return
-
-    gui_log(f"\nProcessing {len(filtered_df)} work orders...")
-    
-    driver = create_driver(is_headless())
-    handle_login(driver)
-
-    for index, row in filtered_df.iterrows():
-        raw_wo = row['WO']
-        raw_name = str(row['Dropdown']).strip()
-        name_parts = raw_name.split()
-        if len(name_parts) >= 2:
-            dropdown_value = f"{name_parts[0].capitalize()} {name_parts[1][0].upper()}"
-        else:
-            dropdown_value = raw_name.capitalize()
-
-        try:
-            wo_number = str(int(raw_wo))
-        except (ValueError, TypeError):
-            excel_row = index + 2
-            gui_log(f"❌ Invalid WO number '{raw_wo}' on spreadsheet line {excel_row}.")
-            continue
-
-        url = BASE_URL + wo_number
-        log(f"\n🔗 Opening WO #{wo_number} — {url}")
-        driver.get(url)
-
-        if not verify_work_order_page(driver, wo_number, url):
-            gui_log(f"❌ Failed to verify WO #{wo_number}. Skipping.")
-            continue
-
-        desired_contractor_label = SELECTED_CONTRACTOR.get()
-        desired_contractor_full = CONTRACTOR_LABELS.get(desired_contractor_label)
-
-        if desired_contractor_full:
-            assign_contractor(driver, wo_number, desired_contractor_full)
-
-        try:
-            dropdown = WebDriverWait(driver, 60).until(
-                EC.presence_of_element_located((By.ID, "AssignEmpID"))
-            )
-            select = Select(dropdown)
-            matched_option = match_dropdown_option(select, dropdown_value, desired_contractor_full)
-
-            if not matched_option:
-                gui_log(f"❌ No dropdown match for '{dropdown_value}' — skipping WO #{wo_number}", level="warning")
-                continue
-
-            # Check and remove other assignments first
-            assignments_div = WebDriverWait(driver, 5).until(
-                EC.presence_of_element_located((By.ID, "AssignmentsList"))
-            )
-            assigned_rows = assignments_div.find_elements(By.XPATH, ".//tr")
-
-            already_assigned = False
-
-            for row in assigned_rows:
-                try:
-                    row_text = row.text.strip().lower()
-                    if matched_option.lower() in row_text:
-                        already_assigned = True
-                    else:
-                        # Remove incorrect assignment
-                        remove_link = row.find_element(By.XPATH, ".//a[contains(@onclick, 'removeWorkOrderAssignment')]")
-                        driver.execute_script("arguments[0].scrollIntoView(true);", remove_link)
-                        driver.execute_script("arguments[0].click();", remove_link)
-
-                        # Confirm alert
-                        try:
-                            alert = WebDriverWait(driver, 2).until(EC.alert_is_present())
-                            alert_text = alert.text
-                            log(f"⚠️ Alert: {alert_text}")
-                            alert.accept()
-                            log("✅ Removed incorrect tech assignment.")
-                        except:
-                            pass
-                except Exception as e:
-                    log(f"⚠️ Skipping row removal due to error: {e}")
-
-            if already_assigned:
-                log(f"🟡 WO #{wo_number}: '{matched_option}' already assigned.")
-                continue
-
-
-            select.select_by_visible_text(matched_option)
-            add_button = WebDriverWait(driver, 60).until(
-                EC.element_to_be_clickable((By.XPATH, "//button[contains(@class, 'Socket')]"))
-            )
-            add_button.click()
-
-        except Exception as e:
-            gui_log(f"❌ Error on WO #{wo_number}: {e}")
-
-    now = datetime.now()
-    filename = f"Output{now.strftime('%m%d%H%M')}.txt"
-    log_path = os.path.join(LOG_FOLDER, filename)
-    with open(log_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(log_lines))
-
-    gui_log(f"\n✅ Done processing work orders.")
-    gui_log(f"🗂️ Output saved to: {log_path}")
-
-    first_jobs = build_first_jobs_summary(filtered_df, name_column="Dropdown")
-    company = SELECTED_CONTRACTOR.get()
-    html_str = jobs_to_html(first_jobs, company)
-    save_and_open_html(html_str)
-
-def create_driver(headless: bool = True) -> webdriver.Chrome:
-    # 1) Locate the browser binary
-    chrome_bin = (
-        os.environ.get("CHROME_BIN")
-        or shutil.which("google-chrome")
-        or shutil.which("chrome")
-        or shutil.which("chromium-browser")
-        or shutil.which("chromium")
-    )
-    if not chrome_bin and platform.system() == "Windows":
-        # Probe standard Windows install paths
-        for p in (
-            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-        ):
-            if os.path.exists(p):
-                chrome_bin = p
-                break
-
-    if not chrome_bin or not os.path.exists(chrome_bin):
-        raise RuntimeError(
-            "Chrome/Chromium binary not found—install it or set CHROME_BIN"
-        )
-
-    # 2) Build ChromeOptions
-    opts = webdriver.ChromeOptions()
-    opts.binary_location = chrome_bin
-    if headless:
-        opts.add_argument("--headless=new")
-        opts.add_argument("--disable-gpu")
-        opts.add_argument("--no-sandbox")
-        opts.add_argument("--disable-usb-keyboard-detect")
-        opts.add_argument("--disable-hid-detection")
-    opts.add_argument("--log-level=3")
-    opts.add_argument("--disable-dev-shm-usage")
-    opts.set_capability("unhandledPromptBehavior", "dismiss")
-    opts.page_load_strategy = "eager"
-
-    # 3) Pick driver based on platform
-    system = platform.system()
-    arch = platform.machine().lower()
-    if system == "Linux" and ("arm" in arch or "aarch64" in arch):
-        # Raspberry Pi / ARM Linux → use distro’s chromedriver
-        driver_path = "/usr/bin/chromedriver"
-        if not os.path.exists(driver_path):
-            raise RuntimeError("ARM chromedriver not found; please `apt install chromium-driver`")
-        service = Service(driver_path)
-    else:
-        # x86 Linux or Windows → download via webdriver-manager
-        service = Service(ChromeDriverManager().install())
-
-    # 4) Launch
-    return webdriver.Chrome(service=service, options=opts)
-
-def assign_jobs_from_dataframe(df):
-    gui_log(f"Processing {len(df)} work orders from pasted text...")
-    driver = create_driver(is_headless())
-    handle_login(driver)
-
-    for index, row in df.iterrows():
-        raw_wo = row['WO']
-        raw_name = str(row.get('Dropdown') or row.get('Tech', '')).strip()
-        raw_name = re.sub(r"^[\-\s]+", "", raw_name)  # Remove leading dashes/spaces
-
-        name_parts = raw_name.split()
-        if len(name_parts) >= 2:
-            dropdown_value = f"{name_parts[0].capitalize()} {name_parts[1][0].upper()}"
-        else:
-            dropdown_value = raw_name.capitalize()
-
-        try:
-            wo_number = str(int(raw_wo))
-        except (ValueError, TypeError):
-            gui_log(f"❌ Invalid WO number '{raw_wo}' on line {index + 2}.")
-            continue
-
-        url = BASE_URL + wo_number
-        log(f"\n🔗 Opening WO #{wo_number} — {url}")
-        driver.get(url)
-
-        # Check if WO is unscheduled
-        try:
-            error_elem = driver.find_element(By.CLASS_NAME, "errors")
-            if "no scheduled dates found" in error_elem.text.lower():
-                gui_log(f"❌ WO {wo_number} is not scheduled — skipping.")
-                continue
-        except:
-            pass  # no error block found, continue
-
-        if not verify_work_order_page(driver, wo_number, url):
-            gui_log(f"❌ Failed to verify WO #{wo_number}. Skipping.")
-            continue
-
-        desired_contractor_label = SELECTED_CONTRACTOR.get()
-        desired_contractor_full = CONTRACTOR_LABELS.get(desired_contractor_label)
-        if desired_contractor_full:
-            assign_contractor(driver, wo_number, desired_contractor_full)
-
-        try:
-            dropdown = WebDriverWait(driver, 60).until(
-                EC.presence_of_element_located((By.ID, "AssignEmpID"))
-            )
-            select = Select(dropdown)
-            matched_option = match_dropdown_option(select, dropdown_value.strip(), desired_contractor_full)
-            if not matched_option:
-                gui_log(f"❌ No dropdown match for '{dropdown_value}' — skipping WO #{wo_number}")
-                continue
-
-            assignments_div = WebDriverWait(driver, 5).until(
-                EC.presence_of_element_located((By.ID, "AssignmentsList"))
-            )
-            assigned_names = assignments_div.text.lower()
-
-            if matched_option.lower() in assigned_names:
-                log(f"🟡 WO #{wo_number}: '{matched_option}' already assigned.")
-                continue
-
-            select.select_by_visible_text(matched_option)
-            add_button = WebDriverWait(driver, 60).until(
-                EC.element_to_be_clickable((By.XPATH, "//button[contains(@class, 'Socket')]"))
-            )
-            add_button.click()
-            gui_log(f"WO {wo_number} - Assigned to {matched_option} with {desired_contractor_full}")
-
-
-        except Exception as e:
-            gui_log(f"❌ Error assigning WO #{wo_number}: {e}")
-
-def assign_contractor(driver, wo_number, desired_contractor_full):
+def assign_contractor(driver, wo_number, desired_contractor_full): #COMPANY ASSIGNMENT
     try:
-        # 🧠 Trigger the assignment UI manually using JavaScript
-        try:
-            driver.execute_script(f"assignContractor('{wo_number}');")
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.ID, "ContractorID"))
-            )
-            time.sleep(0.5)  # let modal settle
-        except Exception as e:
-            gui_log(f"Could not trigger assignContractor JS on WO #{wo_number}: {e}")
-            return
+        page = driver.page
+        # 🧠 Trigger the assignment UI via JavaScript
+        page.evaluate(f"assignContractor('{wo_number}');")
+        page.wait_for_selector("#ContractorID", timeout=10_000)
+        page.wait_for_timeout(500)  # let modal settle
 
         # ✅ Get current contractor assignment from the page
-        current_contractor = get_contractor_assignments(driver)
+        contractor_texts = [
+            elem.inner_text().strip()
+            for elem in page.locator("b").all()
+        ]
+        current_contractor = None
+        for text in contractor_texts:
+            if " - (Primary" in text:
+                current_contractor = text.split(" - ")[0].strip()
+                break
+
         if current_contractor == desired_contractor_full:
             log(f"✅ Contractor '{current_contractor}' already assigned to WO #{wo_number}")
-            return  # No change needed
+            return
 
         log(f"🧹 Reassigning from '{current_contractor}' → '{desired_contractor_full}'")
 
-        # 🧽 Remove the currently assigned contractor (if any)
-        try:
-            remove_links = driver.find_elements(By.XPATH, "//a[contains(@onclick, 'removeContractor')]")
-            for link in remove_links:
-                driver.execute_script("arguments[0].scrollIntoView(true);", link)
-                driver.execute_script("arguments[0].click();", link)
-                time.sleep(1)
-        except Exception as e:
-            gui_log(f"❌ Could not remove existing contractor on WO #{wo_number}: {e}")
+        # 🧽 Remove currently assigned contractors
+        remove_links = page.locator("a").filter(has_text="Remove")
+        for i in range(remove_links.count()):
+            try:
+                link = remove_links.nth(i)
+                link.scroll_into_view_if_needed()
+                link.click()
+                # Confirm alert (Playwright auto-dismisses dialog, but for safety:)
+                page.wait_for_timeout(500)
+            except Exception as e:
+                log(f"❌ Could not remove contractor: {e}")
 
         # 🏷️ Assign the new contractor
+        contractor_dropdown = page.locator("#ContractorID")
+        contractor_dropdown.select_option(label=desired_contractor_full)
+        role_dropdown = page.locator("#ContractorType")
+        role_dropdown.select_option(label="Primary")
+
+        # Hide any modal overlays if needed (FileList)
         try:
-            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "ContractorID")))
-            contractor_dropdown = Select(driver.find_element(By.ID, "ContractorID"))
-            contractor_dropdown.select_by_visible_text(desired_contractor_full)
+            file_list_elem = page.locator("#FileList")
+            if file_list_elem.is_visible():
+                page.evaluate("el => el.style.display = 'none'", file_list_elem)
+        except Exception:
+            pass  # It's okay if FileList isn't present
 
-            role_dropdown = Select(driver.find_element(By.ID, "ContractorType"))
-            role_dropdown.select_by_visible_text("Primary")
+        assign_button = page.locator("input[type='button'][value='Assign']")
+        assign_button.click()
 
-            # Handle potential overlay (e.g. FileList blocking Assign button)
-            try:
-                file_list_elem = driver.find_element(By.ID, "FileList")
-                driver.execute_script("arguments[0].style.display = 'none';", file_list_elem)
-            except:
-                pass  # it's okay if FileList isn't present
-
-            assign_button = driver.find_element(By.XPATH, "//input[@type='button' and @value='Assign']")
-            driver.execute_script("arguments[0].click();", assign_button)
-
-            log(f"🏷️ Assigned contractor '{desired_contractor_full}' to WO #{wo_number}")
-        except Exception as e:
-            log(f"❌ Failed to assign contractor on WO #{wo_number}: {e}")
+        log(f"🏷️ Assigned contractor '{desired_contractor_full}' to WO #{wo_number}")
 
     except Exception as e:
-        gui_log(f"❌ Contractor assignment process failed for WO #{wo_number}: {e}")
+        log(f"❌ Contractor assignment process failed for WO #{wo_number}: {e}")
 
 def reformat_contractor_text(text):
 
@@ -841,54 +572,10 @@ def reformat_contractor_text(text):
 
     return parser_fn(lines)
 
-def get_contractor_assignments(driver):
-    try:
-        # Wait for the contractor section to load
-        WebDriverWait(driver, 5).until(
-            lambda d: "Primary" in d.find_element(By.CLASS_NAME, "contractorsection").text
-        )
-
-        # Find ALL <b> tags and look for the one that contains " - (Primary"
-        for elem in driver.find_elements(By.TAG_NAME, "b"):
-            text = elem.text.strip()
-            if " - (Primary" in text:
-                contractor = text.split(" - ")[0].strip()
-                #log(f"🔍 Detected contractor: {contractor}")
-                return contractor
-
-        log("⚠️ No 'Primary' contractor detected.")
-        return "Unknown"
-        
-    except Exception as e:
-        gui_log(f"❌ Could not find contractor name: {e}")
-        return "Unknown"
-
 def is_headless():
     try:
         return HEADLESS_MODE.get()
     except:
-        return False
-
-def save_cookies(driver, filename="cookies.pkl"):
-    with cookie_lock:
-        with open(COOKIE_PATH, "wb") as f:
-            pickle.dump(driver.get_cookies(), f)
-
-def load_cookies(driver, filename="cookies.pkl"):
-    if not os.path.exists(COOKIE_PATH): return False
-    try:
-        with cookie_lock:
-            with open(COOKIE_PATH, "rb") as f:
-                cookies = pickle.load(f)
-
-        driver.get("http://inside.sockettelecom.com/")
-        for cookie in cookies:
-            driver.add_cookie(cookie)
-        driver.refresh()
-        clear_first_time_overlays(driver)
-        return True
-    except Exception:
-        if os.path.exists(COOKIE_PATH): os.remove(COOKIE_PATH)
         return False
 
 def save_and_open_html(html_str, filename="FirstJobsSummary.html"):
@@ -900,64 +587,39 @@ def save_and_open_html(html_str, filename="FirstJobsSummary.html"):
     webbrowser.open(file_url)
 
 def handle_login(driver):
-    driver.get("http://inside.sockettelecom.com/")
+    # 1) Try to restore state
+    driver.goto("http://inside.sockettelecom.com/")
+    if "login.php" not in driver.page.url:
+        log("✅ Session restored with stored state.")
+        clear_first_time_overlays(driver.page)
+        return
+    # 2) Otherwise, fall back to manual login
+    user, pw = check_env_or_prompt_login(log)
+    driver.goto("http://inside.sockettelecom.com/system/login.php")
+    driver.page.fill("input[name='username']", user)
+    driver.page.fill("input[name='password']", pw)
+    driver.page.click("#login")
+    driver.page.wait_for_selector("iframe#MainView", timeout=10_000)
+    clear_first_time_overlays(driver.page)
+    # 3) Persist for next runs
+    driver.save_state()
+    log("✅ Logged in via credentials.")
 
-    if load_cookies(driver):
-        if not login_failed(driver):
-            log("✅ Session restored via cookies.")
-            clear_first_time_overlays(driver)
-            return 
-
-    # Cookies failed or expired, now try credentials
-    USERNAME, PASSWORD = check_env_or_prompt_login(log)
-
-    while True:
-        perform_login(driver, USERNAME, PASSWORD)
-        time.sleep(2)
-        if not login_failed(driver):
-            save_cookies(driver)
-            return
-        else:
-            gui_log("❌ Login failed. Please re-enter your credentials.")
-            USERNAME, PASSWORD = prompt_for_credentials()
-            save_env_credentials(USERNAME, PASSWORD)
-
-def perform_login(driver, USERNAME, PASSWORD):
-    driver.get("http://inside.sockettelecom.com/system/login.php")
-    WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.NAME, "username")))
-    driver.find_element(By.NAME, "username").send_keys(USERNAME)
-    driver.find_element(By.NAME, "password").send_keys(PASSWORD)
-    driver.find_element(By.ID, "login").click()
-    clear_first_time_overlays(driver)
-    gui_log("Logged in successfully")
-
-def clear_first_time_overlays(driver):
-    # Dismiss alert if present
-    try:
-        WebDriverWait(driver, 0.5).until(EC.alert_is_present())
-        driver.switch_to.alert.dismiss()
-    except:
-        pass
-
-    # Known popup buttons
-    buttons = [
-        "//form[@id='valueForm']//input[@type='button']",
-        "//form[@id='f']//input[@type='button']"
+def clear_first_time_overlays(page):
+    selectors = [
+        'xpath=//input[@id="valueForm1" and @type="button"]',
+        'xpath=//input[@value="Close This" and @type="button"]',
+        'xpath=//form[starts-with(@id,"valueForm")]//input[@type="button"]',
+        'xpath=//form[@id="f"]//input[@type="button"]'
     ]
-    for xpath in buttons:
-        try:
-            WebDriverWait(driver, 0.5).until(EC.element_to_be_clickable((By.XPATH, xpath))).click()
-        except:
-            pass
-
-    # Iframe switch loop
-    for _ in range(3):
-        try:
-            WebDriverWait(driver, 0.5).until(EC.frame_to_be_available_and_switch_to_it((By.ID, "MainView")))
-            return
-        except:
-            time.sleep(0.25)
-    log("❌ Could not switch to MainView iframe.")
+    for sel in selectors:
+        while True:
+            try:
+                btn = page.wait_for_selector(sel, timeout=500)
+                btn.click()
+                page.wait_for_timeout(200)
+            except PlaywrightTimeout:
+                break
 
 def normalize_subt_multiline_format(lines):
     normalized = []
@@ -1021,6 +683,81 @@ def parse_subt_line(fields):
     job_type = fields[type_idx].strip()
     wo = fields[wo_idx].strip().replace("WO", "").strip()
     return job_type, wo
+
+def assign_jobs(df, contractor_label=None):
+    gui_log(f"Processing {len(df)} work orders...")
+    driver = PlaywrightDriver(headless=is_headless())
+    handle_login(driver)
+
+    for index, row in df.iterrows():
+        raw_wo = row['WO']
+        raw_name = str(row.get('Dropdown') or row.get('Tech', '')).strip()
+        raw_name = re.sub(r"^[\-\s]+", "", raw_name)
+
+        name_parts = raw_name.split()
+        if len(name_parts) >= 2:
+            dropdown_value = f"{name_parts[0].capitalize()} {name_parts[1][0].upper()}"
+        else:
+            dropdown_value = raw_name.capitalize()
+
+        try:
+            wo_number = str(int(raw_wo))
+        except (ValueError, TypeError):
+            gui_log(f"❌ Invalid WO number '{raw_wo}' on line {index + 2}.")
+            continue
+
+        url = BASE_URL + wo_number
+        log(f"\n🔗 Opening WO #{wo_number} — {url}")
+        driver.goto(url)
+
+        # Check for unscheduled error (optional; can add custom error logic if you want)
+        try:
+            if "no scheduled dates found" in driver.page.content().lower():
+                gui_log(f"❌ WO {wo_number} is not scheduled — skipping.")
+                continue
+        except Exception:
+            pass
+
+        if not verify_work_order_page(driver, wo_number, url):
+            gui_log(f"❌ Failed to verify WO #{wo_number}. Skipping.")
+            continue
+
+        desired_contractor_label = SELECTED_CONTRACTOR.get()
+        desired_contractor_full = CONTRACTOR_LABELS.get(desired_contractor_label)
+        if desired_contractor_full:
+            assign_contractor(driver, wo_number, desired_contractor_full)
+
+        try:
+            page = driver.page  # Your Playwright page object
+            page.wait_for_selector("#AssignEmpID", timeout=10000)
+            select_elem = page.locator("#AssignEmpID")
+
+            # Get all option texts for robust matching
+            options = select_elem.locator("option").all_inner_texts()
+            matched_option = match_dropdown_option(options, dropdown_value, desired_contractor_full)
+            if not matched_option:
+                gui_log(f"❌ No dropdown match for '{dropdown_value}' — skipping WO #{wo_number}")
+                continue
+
+            # Check if already assigned
+            page.wait_for_selector("#AssignmentsList", timeout=5000)
+            assigned_names = page.locator("#AssignmentsList").inner_text()
+            if matched_option.lower() in assigned_names.lower():
+                log(f"🟡 WO #{wo_number}: '{matched_option}' already assigned.")
+                continue
+
+            # Select tech and click Add
+            select_elem.select_option(label=matched_option)
+            add_button = page.locator("button.button.Socket")
+            add_button.click()
+            gui_log(f"WO {wo_number} - Assigned to {matched_option} ({desired_contractor_full})")
+
+        except Exception as e:
+            gui_log(f"❌ Error assigning WO #{wo_number}: {e}")
+
+    driver.close()  # Clean up browser at the end
+    gui_log(f"\n✅ Done processing work orders.")
+
 # ===== Contractor Parsers =====
 
 def parse_subterraneus_format(lines):
@@ -1393,7 +1130,7 @@ def create_gui():
         def threaded_process():
             try:
                 df_test = pd.read_excel(file_path)
-                process_workorders(file_path)
+                assign_jobs(df_test)
             except Exception as e:
                 gui_log(f"❌ Could not process file: {e}")
         threading.Thread(target=threaded_process, daemon=True).start()
@@ -1420,10 +1157,12 @@ def create_gui():
             df = pd.DataFrame(temp)
 
             if 'Date' not in df.columns:
-                gui_log("❌ 'Date' column missing after parsing. Aborting.")
-                return
+                df['Date'] = (datetime.today() + timedelta(days=1)).strftime("%Y-%m-%d")
 
+            # Parse dates, coerce errors to NaT
             df['Date'] = df['Date'].apply(flexible_date_parser)
+
+            # Fill any blanks (NaT) with tomorrow's date
             tomorrow = datetime.today().date() + timedelta(days=1)
             df['Date'] = df['Date'].fillna(pd.Timestamp(tomorrow))
             df['Time'] = df['Time'].astype(str)
@@ -1444,7 +1183,7 @@ def create_gui():
 
             log(f"📦 Runtime headless check (before assign): {HEADLESS_MODE.get()}")
             def threaded_assign():
-                assign_jobs_from_dataframe(filtered_df)
+                assign_jobs(filtered_df)
                 gui_log("✅ All jobs have been assigned.")
 
             threading.Thread(target=threaded_assign, daemon=True).start()
