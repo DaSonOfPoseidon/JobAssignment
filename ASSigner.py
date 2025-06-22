@@ -19,6 +19,16 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../embedded_python/lib")))
 
+
+# FEATURE ADDONS
+# "Remove Old Aassignments" checkbox, removes old assignments and only keeps the new contractors.
+#  North Sky Job Assignment
+#
+#
+#
+
+
+
 HERE         = os.path.abspath(os.path.dirname(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(HERE, os.pardir))
 OUTPUT_DIR   = os.path.join(PROJECT_ROOT, "Outputs")
@@ -120,12 +130,34 @@ class PlaywrightDriver:
         self.page = self.context.new_page()
         self.page.on("dialog", lambda dlg: dlg.dismiss())
         self.page.route("**/*.{png,svg}", lambda route: route.abort())
-    def goto(self, url, timeout=5000, wait_until="load"):
-        try:
-            return self.page.goto(url, timeout=timeout, wait_until=wait_until)
-        except PlaywrightTimeout:
-            # fallback to full load
-            return self.page.goto(url, timeout=timeout, wait_until="load")
+
+    def goto(self, url, timeout=5000, wait_until="load", retries=3):
+        for attempt in range(retries):
+            try:
+                # Try navigation
+                return self.page.goto(url, timeout=timeout, wait_until=wait_until)
+            except Exception as e:
+                # If navigation was aborted, log and retry
+                if "ERR_ABORTED" in str(e) or "Navigation failed" in str(e):
+                    log(f"🟡 [Attempt {attempt+1}] Navigation aborted for {url}: {e}")
+                    # Try to dismiss any possible alerts
+                    try:
+                        self.page.keyboard.press("Escape")
+                    except Exception:
+                        pass
+                    self.page.wait_for_timeout(300)
+                    continue  # Retry
+                elif isinstance(e, PlaywrightTimeout):
+                    log(f"🟡 [Attempt {attempt+1}] Timeout navigating to {url}, retrying: {e}")
+                    self.page.wait_for_timeout(500)
+                    continue
+                else:
+                    log(f"❌ Navigation error: {e} for {url}")
+                    # Optionally: self.page.reload()
+                    break
+        log(f"❌ Failed to load {url} after {retries} attempts")
+        return None
+        
     def save_state(self, path=None):
         self.context.storage_state(path=path or self.state_path)
     def __getattr__(self, name):
@@ -154,7 +186,7 @@ class Assigner:
 
     def first_jobs(self, jobs):
         df = pd.DataFrame(jobs)
-        assign_jobs_from_dataframe(df)
+        assign_jobs(df)
         summary = build_first_jobs_summary(df)
         # flatten summary into a list of lines
         return [line for lines in summary.values() for line in lines]
@@ -751,9 +783,15 @@ def assign_jobs(df, contractor_label=None):
             add_button = page.locator("button.button.Socket")
             add_button.click()
             gui_log(f"WO {wo_number} - Assigned to {matched_option} ({desired_contractor_full})")
-
         except Exception as e:
             gui_log(f"❌ Error assigning WO #{wo_number}: {e}")
+        
+        # 2. Wait for the page to "settle" after contractor assignment
+        try:
+            driver.page.wait_for_selector("xpath=//td[contains(text(), 'Work Order #:')]", timeout=10_000)
+            driver.page.wait_for_timeout(200)  # slight extra buffer
+        except Exception:
+            log("⚠️ Could not detect Work Order # after assignment. Retrying may be needed.")
 
     driver.close()  # Clean up browser at the end
     gui_log(f"\n✅ Done processing work orders.")
