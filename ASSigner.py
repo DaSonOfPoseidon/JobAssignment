@@ -35,6 +35,8 @@ COOKIE_PATH  = os.path.join(PROJECT_ROOT, "cookies.pkl")
 ENV_PATH     = os.path.join(PROJECT_ROOT, ".env")
 LOG_FOLDER   = os.path.join(PROJECT_ROOT, "logs")
 
+UPDATE_MODE = None
+
 # ensure folders exist
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(LOG_FOLDER, exist_ok=True)
@@ -128,7 +130,7 @@ class PlaywrightDriver:
         else:
             self.context = self.browser.new_context()
         self.page = self.context.new_page()
-        self.page.on("dialog", lambda dlg: dlg.dismiss())
+        self.page.on("dialog", lambda dialog: dialog.accept() if dialog.type == "confirm" else dialog.dismiss())
         self.page.route("**/*.{png,svg}", lambda route: route.abort())
 
     def goto(self, url, timeout=5000, wait_until="load", retries=3):
@@ -774,9 +776,24 @@ def assign_jobs(df, contractor_label=None):
             # Check if already assigned
             page.wait_for_selector("#AssignmentsList", timeout=5000)
             assigned_names = page.locator("#AssignmentsList").inner_text()
-            if matched_option.lower() in assigned_names.lower():
+            if matched_option.lower() in assigned_names.lower() and not UPDATE_MODE.get():
                 log(f"🟡 WO #{wo_number}: '{matched_option}' already assigned.")
                 continue
+
+            log(f"[DEBUG] Update mode is: {UPDATE_MODE.get()}")
+            if UPDATE_MODE.get():
+                # Remove ALL existing assignments
+                remove_icons = page.locator("span[title='Remove Assignment']")
+                log(f"[DEBUG] Found {remove_icons.count()} remove icons.")
+                count = remove_icons.count()
+                for i in range(count):
+                    try:
+                        icon = remove_icons.nth(0)  # Always use nth(0) since the list re-indexes after each click
+                        icon.scroll_into_view_if_needed()
+                        icon.click()
+                        page.wait_for_timeout(300)
+                    except Exception as e:
+                        log(f"❌ Could not remove assignment: {e}")
 
             # Select tech and click Add
             select_elem.select_option(label=matched_option)
@@ -1208,6 +1225,10 @@ def create_gui():
     global WANT_FIRST_JOBS
     WANT_FIRST_JOBS = tk.BooleanVar(value=True)
     tk.Checkbutton(app, text="Show First Jobs Summary", variable=WANT_FIRST_JOBS).pack()
+
+    global UPDATE_MODE
+    UPDATE_MODE = tk.BooleanVar(value=False)
+    tk.Checkbutton(app, text="Update Mode", variable=UPDATE_MODE).pack()
 
     # === HEADLESS MODE OUTPUT LOG ===
     log_output_frame = tk.Frame(app)
