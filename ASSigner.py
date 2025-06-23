@@ -22,7 +22,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../e
 
 # FEATURE ADDONS
 # "Remove Old Aassignments" checkbox, removes old assignments and only keeps the new contractors.
-#  North Sky Job Assignment
 #
 #
 #
@@ -63,6 +62,7 @@ CONTRACTOR_LABELS = {
     "Pifer": "Pifer Quality Communications",
     "Advanced": "Advanced Electric",
     "All Clear": "All Clear",
+    "North Sky": "North Sky",
 }
 
 CONTRACTOR_NAME_CORRECTIONS = {
@@ -1100,12 +1100,76 @@ def parse_all_clear_format(lines):
     print(f"[✅ Parsed] {len(jobs)} All Clear job(s)")
     return jobs
 
+def parse_north_sky_format(lines):
+    jobs = []
+    current_date = None
+    current_time = None
+
+    dash_format = re.compile(
+        r"(\d{1,2}:\d{2})?\s*-\s*(.*?)\s*-\s*[\d\-]+?\s*-\s*(.*?)\s*-\s*(.*?)\s*-\s*WO\s*(\d+)\s*-\s*(.+)",
+        re.IGNORECASE
+    )
+
+    underscore_format = re.compile(
+        r"(.*?)\s*-\s*[\d\-]+?\s*_+\s*(.*?)\s*_+\s*(.*?)\s*_+\s*WO\s*(\d+)\s*-\s*(.+)",
+        re.IGNORECASE
+    )
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        # Check for date (assumed to be outside your snippet—skip)
+        if re.match(r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}", line):
+            current_date = line
+            continue
+
+        # Update current time if it's a time marker
+        if re.fullmatch(r"\d{1,2}(:\d{2})?\s?(AM|PM)?", line, re.IGNORECASE):
+            current_time = format_time_str(line)
+            continue
+
+        # Dash-delimited format
+        dash_match = dash_format.match(line)
+        if dash_match:
+            time, name, job_type, address, wo_number, tech = dash_match.groups()
+            time = format_time_str(time) if time else current_time
+            jobs.append({
+                "Date": current_date,
+                "Time": time,
+                "Name": name.strip(),
+                "Type": job_type.strip(),
+                "WO": wo_number.strip(),
+                "Address": address.strip(),
+                "Tech": tech.strip()
+            })
+            continue
+
+        # Underscore-delimited format
+        underscore_match = underscore_format.match(line)
+        if underscore_match:
+            name, job_type, address, wo_number, tech = underscore_match.groups()
+            jobs.append({
+                "Date": current_date,
+                "Time": current_time,
+                "Name": name.strip(),
+                "Type": job_type.strip(),
+                "WO": wo_number.strip(),
+                "Address": address.strip(),
+                "Tech": tech.strip()
+            })
+
+    print(f"[✅ Parsed] {len(jobs)} North Sky job(s)")
+    return jobs
+
 CONTRACTOR_FORMAT_PARSERS = {
     "Subterraneus Installs": parse_subterraneus_format,
     "TGS Fiber": parse_tgs_format,
     "Tex-Star Communications": parse_texstar_format,
     "All Clear": parse_all_clear_format,
-    "Pifer Quality Communications": parse_pifer_format
+    "Pifer Quality Communications": parse_pifer_format,
+    "North Sky": parse_north_sky_format,
 }
 
 def create_gui():
