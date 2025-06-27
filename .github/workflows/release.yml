@@ -27,24 +27,14 @@ jobs:
         id: extract_version
         shell: pwsh
         run: |
-          # Read the entire file
           $text = Get-Content -Raw ASSigner.py
-
-          # Use a double-quoted string so we can embed both single and double quotes
-          $pattern = "^__version__\s*=\s*[""'](?<v>[^""']+)[""']"
-
-          # Perform a multiline match
-          $match = [regex]::Match($text, $pattern, 'Multiline')
-
+          $pattern = '^__version__\s*=\s*["''](?<v>[^"'']+)["'']'
+          $match   = [regex]::Match($text, $pattern, 'Multiline')
           if (-not $match.Success) {
-            Write-Error "Could not find __version__ in ASSigner.py"
-            exit 1
+            Write-Error "Could not find __version__ in ASSigner.py"; exit 1
           }
-
           $ver = $match.Groups['v'].Value
           Write-Host "Parsed version: $ver"
-
-          # Export to GitHub Actions environment
           "ASSIGNER_VER=$ver" | Out-File -Encoding ASCII -Append $Env:GITHUB_ENV
 
       - name: Show the version
@@ -64,11 +54,20 @@ jobs:
         run: |
           pyinstaller ASSigner.spec
 
-      - name: Restore PyUpdater key
+      - name: Copy built EXE into PyUpdater files folder
+        shell: pwsh
         run: |
-          mkdir -p .pyupdater/private_keys
-          echo "${{ secrets.PYUPDATER_KEY }}" > .pyupdater/private_keys/key.pem
-          chmod 600 .pyupdater/private_keys/key.pem
+          mkdir .\pyu-data\files -Force
+          Copy-Item -Path .\dist\ASSigner.exe `
+                    -Destination .\pyu-data\files\ASSigner.exe `
+                    -Force
+
+      - name: Restore PyUpdater key
+        shell: pwsh
+        run: |
+          mkdir -Force .\.pyupdater\private_keys
+          "${{ secrets.PYUPDATER_KEY }}" | Out-File -Encoding ASCII .\.pyupdater\private_keys\key.pem
+          icacls .\.pyupdater\private_keys\key.pem /inheritance:r /grant:r "$($Env:USERNAME):R"
 
       - name: Ensure deploy directory exists
         run: mkdir deploy
@@ -78,14 +77,16 @@ jobs:
           pyupdater pkg --app-name "ASSigner" --version ${{ env.ASSIGNER_VER }} --process
 
       - name: Move PyUpdater output into deploy/
+        shell: pwsh
         run: |
-          move pyu-data\deploy\* deploy\
+          Copy-Item -Path .\pyu-data\deploy\json\*  -Destination .\deploy -Recurse -Force
+          Copy-Item -Path .\pyu-data\deploy\files\* -Destination .\deploy -Recurse -Force
 
       - name: Debug deploy folder
         shell: pwsh
         run: |
           Write-Host "Contents of deploy/:"
-          Get-ChildItem deploy -Recurse | ForEach-Object FullName
+          Get-ChildItem .\deploy -Recurse | ForEach-Object FullName
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
