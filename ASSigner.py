@@ -21,9 +21,6 @@ from tkinter import ttk, messagebox, Tk
 from tkinterdnd2 import DND_FILES, TkinterDnD
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout, Error as PlaywrightError
 
-from pyupdater.client import Client
-from client_config import ClientConfig
-
 # FEATURE ADDONS
 # 
 #
@@ -44,7 +41,7 @@ def get_project_root() -> str: #Returns the root directory of the project as a s
     else:
         file_path = Path(__file__).resolve()
         parent = file_path.parent
-        if parent.name.lower() == "bin":
+        if parent.name.lower() == "bin" or "JobAssignment":
             root = parent.parent
         else:
             root = parent.parent  # adjust as needed
@@ -119,7 +116,8 @@ CONTRACTOR_NAME_CORRECTIONS = {
         "robbie": "Robby Cowart",
         "tommu": "Tommy Estrada",
         "frank": "Francisco Morales",
-        "marcus": "Demarcus Blackmon"
+        "marcus": "Demarcus Blackmon",
+        "don": "Donald Fuller"
     },
     "Pifer Quality Communications": {
         "caleb": "Caleb Pifer",
