@@ -50,11 +50,7 @@ jobs:
 
       - name: Build & stage ASSigner with PyUpdater
         run: |
-          pyupdater build \
-            --console \
-            --app-name "ASSigner" \
-            --app-version ${{ env.ASSIGNER_VER }} \
-            ASSigner.py
+          pyupdater build --console --app-name "ASSigner" --app-version ${{ env.ASSIGNER_VER }} ASSigner.py
 
       - name: Debug pyu-data/new
         shell: pwsh
