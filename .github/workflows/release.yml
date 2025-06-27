@@ -17,51 +17,53 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python 3.11
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
 
-      - name: Extract version
+      - name: Extract version from ASSigner.py
         id: extract_version
-        shell: bash
+        shell: pwsh
         run: |
-          echo VERSION_ASSIGNER=$(python - << 'EOF'
-          import re
-          text = open('ASSigner.py').read()
-          m = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', text, re.M)
-          print(m.group(1) if m else sys.exit(1))
-          EOF
-          ) >> $GITHUB_ENV
+          $text = Get-Content -Raw -Encoding UTF8 ASSigner.py
+          if ($text -match '^__version__\s*=\s*["'']([^"'']+)["'']') {
+            Write-Output "VERSION_ASSIGNER=$($matches[1])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          } else {
+            throw "Could not find __version__ in ASSigner.py"
+          }
 
-      - name: Install dependencies
-        run: pip install --upgrade pip && pip install -r requirements.txt pyupdater pyupdater-http
+      - name: Upgrade pip and install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyupdater pyupdater-http
 
       - name: Install Playwright browsers
-        run: cmd /c "set PLAYWRIGHT_BROWSERS_PATH=0 && playwright install chromium"
+        shell: pwsh
+        run: |
+          $Env:PLAYWRIGHT_BROWSERS_PATH = "0"
+          playwright install chromium
 
       - name: PyUpdater build
         shell: pwsh
-        run: >
-          pyupdater build
-          --console
-          --app-name=ASSigner
-          --app-version=${{ env.VERSION_ASSIGNER }}
-          ASSigner.py
+        env:
+          VERSION_ASSIGNER: ${{ env.VERSION_ASSIGNER }}
+        run: |
+          pyupdater build --console --app-version=$env:VERSION_ASSIGNER ASSigner.py
 
-      - name: Debug pyu-data/new
+      - name: Debug pyu-data/new contents
         shell: pwsh
-        run: >
-          Write-Host ">>> pyu-data/new contents:";
+        run: |
+          Write-Host ">>> pyu-data/new contents:"
           Get-ChildItem .\pyu-data\new -Recurse | ForEach-Object FullName
 
       - name: PyUpdater package
-        run: pyupdater pkg --process --debug
+        run: pyupdater pkg --app-name ASSigner --process --debug
 
-      - name: Debug pyu-data/deploy
+      - name: Debug pyu-data/deploy contents
         shell: pwsh
-        run: >
-          Write-Host ">>> pyu-data/deploy contents:";
+        run: |
+          Write-Host ">>> pyu-data/deploy contents:"
           Get-ChildItem .\pyu-data\deploy -Recurse | ForEach-Object FullName
 
       - name: Publish to GitHub Pages
