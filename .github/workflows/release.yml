@@ -41,25 +41,20 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller pyupdater pyupdater-http
+          pip install -r requirements.txt pyupdater pyupdater-http
 
       - name: Install Playwright browsers
         run: |
           set PLAYWRIGHT_BROWSERS_PATH=0
           playwright install chromium
 
-      - name: Build ASSigner EXE
-        run: pyinstaller ASSigner.spec
-
-      - name: Stage new build for PyUpdater (as ZIP)
-        shell: pwsh
+      - name: Build & stage ASSigner with PyUpdater
         run: |
-          mkdir .\pyu-data\new -Force
-          $zipName = "${{ env.ASSIGNER_VER }}.zip"
-          Compress-Archive `
-            -Path .\dist\ASSigner.exe `
-            -DestinationPath .\pyu-data\new\$zipName `
-            -Force
+          pyupdater build \
+            --console \
+            --app-name "ASSigner" \
+            --app-version ${{ env.ASSIGNER_VER }} \
+            ASSigner.py
 
       - name: Debug pyu-data/new
         shell: pwsh
