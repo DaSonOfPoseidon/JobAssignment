@@ -55,10 +55,10 @@ jobs:
         shell: pwsh
         run: |
           mkdir .\pyu-data\new -Force
-          # Zip the built EXE—PyUpdater expects archives, not raw EXEs
+          $zipName = "${{ env.ASSIGNER_VER }}.zip"
           Compress-Archive `
             -Path .\dist\ASSigner.exe `
-            -DestinationPath .\pyu-data\new\ASSigner_${{ env.ASSIGNER_VER }}.zip `
+            -DestinationPath .\pyu-data\new\$zipName `
             -Force
 
       - name: Debug pyu-data/new
