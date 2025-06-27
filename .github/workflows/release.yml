@@ -1,18 +1,19 @@
-name: Build & Publish Updates
+name: Build & Publish ASSigner
 
 on:
   push:
-    # or: tags: [ 'v*.*.*' ]
-    branches: [ main ]
+    branches:
+      - main
+  workflow_dispatch:
 
 permissions:
-  contents: write   # for actions/checkout, build, etc.
-  pages: write     # to push to gh-pages
-  id-token: write  # if you ever use OIDC (optional)
+  contents: write
+  pages: write
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -22,17 +23,40 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Extract __version__ from ASSigner.py
+        id: extract_version
+        shell: pwsh
+        run: |
+          $text = Get-Content -Raw ASSigner.py
+          $ver  = [regex]::Match($text, '^\_\_version\_\_\s*=\s*["''](?<v>[^"'']+)["'']', 'Multiline').Groups['v'].Value
+          if (-not $ver) { throw "Couldn't parse __version__" }
+          Write-Host "Parsed version: $ver"
+          # Export to GitHub Actions env
+          "ASSIGNER_VER=$ver" | Out-File -Encoding ASCII -Append $Env:GITHUB_ENV
+
+      - name: Show the version
+        run: echo "Building ASSigner v${{ env.ASSIGNER_VER }}"
+
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install pyinstaller pyupdater pyupdater-http
-
-      - name: Build & package
+          pip install -r requirements.txt pyinstaller pyupdater pyupdater-http
+      - name: Install Playwright browsers
         run: |
-          pyupdater pkg --process
+          set PLAYWRIGHT_BROWSERS_PATH=0
+          playwright install chromium
+
+      - name: Build & package via spec
+        run: |
+          pyinstaller ASSigner.spec
+          pyupdater pkg `
+            --app-name "ASSigner" `
+            --version $env:ASSIGNER_VER `
+            --process
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./deploy   # this is where pyupdater outputs
+          publish_dir: ./deploy
+          publish_branch: gh-pages

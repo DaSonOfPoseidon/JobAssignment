@@ -1,6 +1,6 @@
 class ClientConfig(object):
-    PUBLIC_KEY = 'None'
-    APP_NAME = 'JobAssignment'
+    PUBLIC_KEY = 'KU20Ac+N8JEWcUhR667AbODhJjJuf0RoAmLA+QPFPmI'
+    APP_NAME = 'ASSigner'
     COMPANY_NAME = 'Jackson K'
     HTTP_TIMEOUT = 30
     MAX_DOWNLOAD_RETRIES = 3

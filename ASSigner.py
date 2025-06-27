@@ -2,6 +2,9 @@ import sys
 import os
 import re
 import time
+import subprocess
+import argparse
+import traceback
 from datetime import datetime, timedelta, date
 from collections import defaultdict
 from tkinter import messagebox
@@ -10,41 +13,61 @@ import pandas as pd
 from rapidfuzz import fuzz
 import threading
 import webbrowser
+from pathlib import Path
 import tkinter as tk
 from tkcalendar import DateEntry
-from email_reader import connect_imap, find_matching_msg_nums, fetch_body, extract_relevant_section
 from tkinter import simpledialog
-from tkinter import ttk
+from tkinter import ttk, messagebox, Tk
 from tkinterdnd2 import DND_FILES, TkinterDnD
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../embedded_python/lib")))
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout, Error as PlaywrightError
 
+from pyupdater.client import Client
+from client_config import ClientConfig
 
 # FEATURE ADDONS
-# "Remove Old Aassignments" checkbox, removes old assignments and only keeps the new contractors.
+# 
 #
 #
 #
 
+__version__ = "0.1.0"
 
+def get_project_root() -> str: #Returns the root directory of the project as a string path.
+    # return string path for PROJECT_ROOT
+    if getattr(sys, "frozen", False):
+        exe_path = Path(sys.executable).resolve()
+        parent = exe_path.parent
+        if parent.name.lower() == "bin":
+            root = parent.parent
+        else:
+            root = parent
+    else:
+        file_path = Path(__file__).resolve()
+        parent = file_path.parent
+        if parent.name.lower() == "bin":
+            root = parent.parent
+        else:
+            root = parent.parent  # adjust as needed
+    return str(root)
 
-HERE         = os.path.abspath(os.path.dirname(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(HERE, os.pardir))
-OUTPUT_DIR   = os.path.join(PROJECT_ROOT, "Outputs")
-COOKIE_PATH  = os.path.join(PROJECT_ROOT, "cookies.pkl")
-ENV_PATH     = os.path.join(PROJECT_ROOT, ".env")
-LOG_FOLDER   = os.path.join(PROJECT_ROOT, "logs")
+# Then:
+PROJECT_ROOT = get_project_root()
+OUTPUT_DIR  = os.path.join(PROJECT_ROOT, "Outputs")
+ENV_PATH    = os.path.join(PROJECT_ROOT, ".env")
+BROWSERS    = os.path.join(PROJECT_ROOT, "browsers")
+LOG_FOLDER  = os.path.join(PROJECT_ROOT, "logs")
+LOG_FILE    = os.path.join(LOG_FOLDER, "playwright_install.log")
 
 UPDATE_MODE = None
 
 # ensure folders exist
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(LOG_FOLDER, exist_ok=True)
+os.makedirs(BROWSERS, exist_ok=True)
 
 # === CONFIGURATION ===
 SHOW_ALL_OUTPUT_IN_CONSOLE = True
 load_dotenv(dotenv_path=ENV_PATH)
-cookie_lock = threading.Lock()
 
 COLUMN_DATE = 0
 COLUMN_TIME = 1
@@ -115,8 +138,6 @@ log_lines = []
 
 class PlaywrightDriver:
     def __init__(self, headless=True, state_path=None, playwright=None, browser=None):
-        # Use state_path for session persistence if provided
-        from pathlib import Path
         self.state_path = state_path or os.path.join(PROJECT_ROOT, "state.json")
         if playwright and browser:
             self._pw = playwright
@@ -194,9 +215,14 @@ class Assigner:
         return [line for lines in summary.values() for line in lines]
 
 def log(message):
-    log_lines.append(message)
-    if SHOW_ALL_OUTPUT_IN_CONSOLE :
-        print(message)
+    timestamp = datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")
+    line = timestamp + message
+    print(line)  # since you build with console for debugging
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception as e:
+        print(f"Failed writing log: {e}")
 
 def gui_log(message):
     try:
@@ -210,6 +236,110 @@ def gui_log(message):
             log(new_message)
     except Exception as e:
         log(f"⚠️ Failed to update GUI log: {e}")
+
+def install_chromium():
+    log("=== install_chromium started ===")
+    try:
+        log(f"sys.frozen={getattr(sys, 'frozen', False)}")
+        if getattr(sys, "frozen", False):
+            log("Frozen branch: importing playwright.__main__")
+            try:
+                import playwright.__main__ as pw_cli
+                log("Imported playwright.__main__ successfully")
+            except Exception as ie:
+                log(f"ImportError playwright.__main__: {ie}\n{traceback.format_exc()}")
+                raise RuntimeError("Playwright package not found in the frozen bundle.") from ie
+
+            old_argv = sys.argv.copy()
+            sys.argv = ["playwright", "install", "chromium"]
+            try:
+                log("Calling pw_cli.main()")
+                try:
+                    pw_cli.main()
+                    log("pw_cli.main() returned normally")
+                except SystemExit as se:
+                    log(f"pw_cli.main() called sys.exit({se.code}); continuing")
+                    # You may check se.code: 0 means success; non-zero means failure.
+                    if se.code != 0:
+                        raise RuntimeError(f"playwright install exited with code {se.code}")
+                except Exception as e:
+                    log(f"Exception inside pw_cli.main(): {e}\n{traceback.format_exc()}")
+                    raise
+            finally:
+                sys.argv = old_argv
+        else:
+            log("Script mode branch: calling subprocess")
+            cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
+            log(f"Subprocess command: {cmd}")
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            log(f"Subprocess return code: {proc.returncode}")
+            if proc.stdout:
+                log(f"Subprocess stdout: {proc.stdout.strip()}")
+            if proc.stderr:
+                log(f"Subprocess stderr: {proc.stderr.strip()}")
+            if proc.returncode != 0:
+                raise RuntimeError(f"playwright install failed, return code {proc.returncode}")
+    except Exception as e:
+        log(f"Exception in install_chromium: {e}\n{traceback.format_exc()}")
+        # Show error to user
+        try:
+            from tkinter import messagebox, Tk
+            root = Tk(); root.withdraw()
+            messagebox.showerror("Playwright Error", f"Failed to install Chromium:\n{e}\nSee diagnostic.log")
+            root.destroy()
+        except Exception as gui_e:
+            print(f"Playwright install error: {e}; plus GUI error: {gui_e}")
+        # Re-raise so caller knows install failed
+        raise
+    log("=== install_chromium finished ===")
+
+def is_chromium_installed():
+    """
+    Try launching Chromium headless via sync API. Returns True if successful.
+    """
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            browser.close()
+        return True
+    except PlaywrightError:
+        return False
+    except Exception:
+        return False
+
+def ensure_playwright():
+    """
+    Sync check: if Chromium not installed or broken, run install_chromium().
+    """
+    try:
+        if not is_chromium_installed():
+            # Inform user
+            try:
+                root = Tk()
+                root.withdraw()
+                messagebox.showinfo("Playwright", "Chromium not found; downloading browser binaries now. This may take a few minutes.")
+                root.destroy()
+            except Exception:
+                print("Chromium not found; downloading browser binaries now...")
+
+            install_chromium()
+
+            # After install, re-check
+            if not is_chromium_installed():
+                raise RuntimeError("Install completed but Chromium still not launchable.")
+    except Exception as e:
+        # Log and show error to user, referencing the log file
+        err_msg = f"Playwright setup failed: {e}\nSee log file for details"
+        log(err_msg)
+        try:
+            root = Tk()
+            root.withdraw()
+            messagebox.showerror("Playwright Error", err_msg)
+            root.destroy()
+        except Exception:
+            print(err_msg)
+        # Optionally exit or re-raise
+        raise
 
 def ask_date_range(dates):
     top = tk.Toplevel()
@@ -445,12 +575,11 @@ def prompt_for_credentials():
     return USERNAME, PASSWORD
 
 def save_env_credentials(USERNAME, PASSWORD):
-    dotenv_path = ".env"
-    if not os.path.exists(dotenv_path):
-        with open(dotenv_path, "w") as f:
+    if not os.path.exists(ENV_PATH):
+        with open(ENV_PATH, "w") as f:
             f.write("")
-    set_key(dotenv_path, "UNITY_USER", USERNAME)
-    set_key(dotenv_path, "PASSWORD", PASSWORD)
+    set_key(ENV_PATH, "UNITY_USER", USERNAME)
+    set_key(ENV_PATH, "PASSWORD", PASSWORD)
 
 def jobs_to_html(first_jobs, company): #FIRST JOBS FORMAT
     now = datetime.now()
@@ -812,6 +941,19 @@ def assign_jobs(df, contractor_label=None):
 
     driver.close()  # Clean up browser at the end
     gui_log(f"\n✅ Done processing work orders.")
+
+def check_for_update():
+    client = Client(ClientConfig(), refresh=True)
+    latest = client.update_check(ClientConfig.APP_NAME, __version__)
+    if not latest:
+        print("✓ No update available.")
+        return
+    print(f"⬆️  Update found! {latest.version} → downloading…")
+    if client.download(latest):
+        print("✅ Download complete, restarting into new version…")
+        client.extract_restart()  # replaces EXE and relaunches
+    else:
+        print("❌ Download failed.")
 
 # ===== Contractor Parsers =====
 
@@ -1254,6 +1396,8 @@ def create_gui():
             try:
                 df_test = pd.read_excel(file_path)
                 assign_jobs(df_test)
+            except PlaywrightError as e:
+                gui_log(f"❌ Issue ensuring playwright: {e}")                
             except Exception as e:
                 gui_log(f"❌ Could not process file: {e}")
         threading.Thread(target=threaded_process, daemon=True).start()
@@ -1337,32 +1481,43 @@ def create_gui():
     app.mainloop()
 
 if __name__ == "__main__":
-    # This all works it just takes a second to run and is not useful currently
-    #
-    #
-    # target_env = os.getenv("EMAIL_TARGET_DATE")  # e.g. “2025-05-27”
-    # if target_env:
-    #     try:
-    #         target_date = datetime.fromisoformat(target_env).date()
-    #     except ValueError:
-    #         print("Invalid EMAIL_TARGET_DATE; should be YYYY-MM-DD")
-    # else:
-    #     target_date = date.today() + timedelta(days=1)
-    # imap = None
-    # try:
-    #     imap = connect_imap()
-    #     msg_nums = find_matching_msg_nums(imap, target_date)
-    #     print(f"[Email] Found {len(msg_nums)} message(s) matching {target_date}:\n")
-    #     for num in msg_nums:
-    #         body = extract_relevant_section(fetch_body(imap, num))
-    #         print(f"--- Email #{num.decode()} ---\n{body}\n")
-    # except Exception as e:
-    #     print(f"[Email] Error: {e}")
-    # finally:
-    #     if imap:
-    #         try: imap.logout()
-    #         except: pass
     try:
+        parser = argparse.ArgumentParser()
+        parser.add_argument(
+            '--update',
+            action='store_true',
+            help="Check for a new version and apply it"
+        )
+        parser.add_argument(
+            '--version',
+            action='store_true',
+            help="Print current version and exit"
+        )
+        args, remaining = parser.parse_known_args()
+
+        if args.version:
+            print(__version__)
+            sys.exit(0)
+
+        if args.update:
+            check_for_update()
+            sys.exit(0)
+        try:
+            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = BROWSERS
+            print(f"PLAYWRIGHT_BROWSERS_PATH set to {BROWSERS}")
+            ensure_playwright()
+        except Exception as e:
+            # Log full traceback
+            tb = traceback.format_exc()
+            log(f"ensure_playwright() raised exception: {e}\n{tb}")
+            # Show to user
+            try:
+                root = Tk(); root.withdraw()
+                messagebox.showerror("Startup Error", f"Playwright setup failed: {e}\nSee log for details.")
+                root.destroy()
+            except Exception:
+                print(f"Playwright setup failed: {e}. See log at {LOG_FILE}")
+
         create_gui()
     except Exception as e:
         print(f"\n❌ Fatal error: {e}")
