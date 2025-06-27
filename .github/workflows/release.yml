@@ -51,11 +51,15 @@ jobs:
       - name: Build ASSigner EXE
         run: pyinstaller ASSigner.spec
 
-      - name: Stage new build for PyUpdater
+      - name: Stage new build for PyUpdater (as ZIP)
         shell: pwsh
         run: |
           mkdir .\pyu-data\new -Force
-          Copy-Item .\dist\ASSigner.exe .\pyu-data\new\ASSigner.exe -Force
+          # Zip the built EXE—PyUpdater expects archives, not raw EXEs
+          Compress-Archive `
+            -Path .\dist\ASSigner.exe `
+            -DestinationPath .\pyu-data\new\ASSigner_${{ env.ASSIGNER_VER }}.zip `
+            -Force
 
       - name: Debug pyu-data/new
         shell: pwsh
