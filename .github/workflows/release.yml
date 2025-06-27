@@ -51,38 +51,36 @@ jobs:
       - name: Build ASSigner EXE
         run: pyinstaller ASSigner.spec
 
-      - name: Copy built EXE into PyUpdater files folder
+      - name: Stage new build for PyUpdater
         shell: pwsh
         run: |
-          mkdir .\pyu-data\files -Force
-          Copy-Item `
-            -Path .\dist\ASSigner.exe `
-            -Destination .\pyu-data\files\ASSigner.exe `
-            -Force
+          mkdir .\pyu-data\new -Force
+          Copy-Item .\dist\ASSigner.exe .\pyu-data\new\ASSigner.exe -Force
 
-      - name: Debug pyu-data/files
+      - name: Debug pyu-data/new
         shell: pwsh
         run: |
-          Write-Host "`n>>> pyu-data/files contents:"
-          Get-ChildItem .\pyu-data\files -Recurse | ForEach-Object FullName
+          Write-Host ">>> pyu-data/new contents:"
+          Get-ChildItem .\pyu-data\new -Recurse | ForEach-Object FullName
 
       - name: Restore PyUpdater key
         shell: pwsh
         run: |
           mkdir -Force .\.pyupdater\private_keys
-          "${{ secrets.PYUPDATER_KEY }}" | Out-File -Encoding ASCII .\.pyupdater\private_keys\key.pem
+          "${{ secrets.PYUPDATER_KEY }}" |
+            Out-File -Encoding ASCII .\.pyupdater\private_keys\key.pem
           icacls .\.pyupdater\private_keys\key.pem /inheritance:r /grant:r "$($Env:USERNAME):R"
 
       - name: Ensure deploy directory exists
         run: mkdir deploy
 
       - name: Package update with PyUpdater
-        run: pyupdater pkg --app-name "ASSigner" --version ${{ env.ASSIGNER_VER }} --process
+        run: pyupdater pkg --app-name "ASSigner" --version ${{ env.ASSIGNER_VER }} --process --debug
 
       - name: Debug pyu-data/deploy
         shell: pwsh
         run: |
-          Write-Host "`n>>> pyu-data/deploy contents:"
+          Write-Host ">>> pyu-data/deploy contents:"
           Get-ChildItem .\pyu-data\deploy -Recurse | ForEach-Object FullName
 
       - name: Move PyUpdater output into deploy/
@@ -93,7 +91,7 @@ jobs:
       - name: Debug deploy folder
         shell: pwsh
         run: |
-          Write-Host "`n>>> deploy/ contents:"
+          Write-Host ">>> deploy/ contents:"
           Get-ChildItem .\deploy -Recurse | ForEach-Object FullName
 
       - name: Deploy to GitHub Pages
