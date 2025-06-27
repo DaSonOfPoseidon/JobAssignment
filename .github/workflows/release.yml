@@ -24,46 +24,39 @@ jobs:
         id: extract_version
         shell: pwsh
         run: |
-          $m=[regex]::Match((Get-Content -Raw ASSigner.py),'^__version__\s*=\s*["''](?<v>[^"'']+)["'']','Multiline'); if(-not $m.Success){throw "No __version__"}; "ASSIGNER_VER=$($m.Groups['v'].Value)" | Out-File -Encoding ASCII -Append $Env:GITHUB_ENV
+          $m = [regex]::Match((Get-Content -Raw ASSigner.py),
+               '^__version__\s*=\s*["''](?<v>[^"'']+)["'']','Multiline');
+          if (-not $m.Success) { throw "No __version__" }
+          "ASSIGNER_VER=$($m.Groups['v'].Value)" |
+            Out-File -Encoding ASCII -Append $Env:GITHUB_ENV
 
       - name: Install deps
         run: pip install --upgrade pip && pip install -r requirements.txt pyupdater pyupdater-http
 
-      - name: Install Playwright
+      - name: Install Playwright browsers
         run: cmd /c "set PLAYWRIGHT_BROWSERS_PATH=0 && playwright install chromium"
 
       - name: PyUpdater build
         run: pyupdater build --console --app-version ${{ env.ASSIGNER_VER }} ASSigner.py
 
-      - name: Debug new/
+      - name: Restore PyUpdater key
         shell: pwsh
-        run: Write-Host ">>> new contents:"; Get-ChildItem .\pyu-data\new -Recurse | ForEach-Object FullName
+        run: |
+          mkdir .\.pyupdater\private_keys -Force;
+          "${{ secrets.PYUPDATER_KEY }}" |
+            Out-File -Encoding ASCII .\.pyupdater\private_keys\key.pem;
+          icacls .\.pyupdater\private_keys\key.pem /inheritance:r /grant:r "$($Env:USERNAME):R"
 
-      - name: Restore key
+      - name: PyUpdater package & sign
+        run: pyupdater pkg --process --sign --debug
+
+      - name: Debug deploy artifacts
         shell: pwsh
-        run: mkdir .\.pyupdater\private_keys -Force; "${{ secrets.PYUPDATER_KEY }}" | Out-File -Encoding ASCII .\.pyupdater\private_keys\key.pem; icacls .\.pyupdater\private_keys\key.pem /inheritance:r /grant:r "$($Env:USERNAME):R"
+        run: Write-Host ">>> pyu-data/deploy contents:"; Get-ChildItem .\pyu-data\deploy -Recurse | ForEach-Object FullName
 
-      - name: Ensure deploy/
-        run: cmd /c "if not exist deploy mkdir deploy"
-
-      - name: PyUpdater pkg
-        run: pyupdater pkg --process --sign --split-version
-
-      - name: Debug deploy-data
-        shell: pwsh
-        run: Write-Host ">>> deploy-data contents:"; Get-ChildItem .\pyu-data\deploy -Recurse | ForEach-Object FullName
-
-      - name: Move to deploy/
-        shell: pwsh
-        run: Copy-Item .\pyu-data\deploy\* -Destination .\deploy -Recurse -Force
-
-      - name: Debug deploy/
-        shell: pwsh
-        run: Write-Host ">>> deploy contents:"; Get-ChildItem .\deploy -Recurse | ForEach-Object FullName
-
-      - name: Publish gh-pages
+      - name: Publish to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./deploy
+          publish_dir: ./pyu-data/deploy
           publish_branch: gh-pages
