@@ -14,7 +14,7 @@ pyu-data/keys/
 state.json
 build/
 dist/
-.pyupdater/
+.pyupdater/private_keys/*
 pyu-data/
 
 # Editor / OS cruft
@@ -26,4 +26,4 @@ pyu-data/
 
 # PyUpdater configuration files
 keypack.pyu
-config.pyu
+

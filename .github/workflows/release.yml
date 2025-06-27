@@ -54,17 +54,27 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt pyinstaller pyupdater pyupdater-http
+
       - name: Install Playwright browsers
         run: |
           set PLAYWRIGHT_BROWSERS_PATH=0
           playwright install chromium
 
-      - name: Build & package via spec
+      - name: Build ASSigner EXE
         run: |
           pyinstaller ASSigner.spec
-          pyupdater pkg `
-            --app-name "ASSigner" `
-            --version $env:ASSIGNER_VER `
+
+      - name: Restore PyUpdater key
+        run: |
+          mkdir -p .pyupdater/private_keys
+          echo "${{ secrets.PYUPDATER_KEY }}" > .pyupdater/private_keys/key.pem
+          chmod 600 .pyupdater/private_keys/key.pem
+
+      - name: Package update with PyUpdater
+        run: |
+          pyupdater pkg \
+            --app-name "ASSigner" \
+            --version ${{ env.ASSIGNER_VER }} \
             --process
 
       - name: Deploy to GitHub Pages
