@@ -69,7 +69,7 @@ jobs:
           mkdir -p .pyupdater/private_keys
           echo "${{ secrets.PYUPDATER_KEY }}" > .pyupdater/private_keys/key.pem
           chmod 600 .pyupdater/private_keys/key.pem
-          
+
       - name: Ensure deploy directory exists
         run: mkdir deploy
 
@@ -77,12 +77,13 @@ jobs:
         run: |
           pyupdater pkg --app-name "ASSigner" --version ${{ env.ASSIGNER_VER }} --process
 
-      - name: Debug List workspace
+      - name: Move PyUpdater output into deploy/
         run: |
-          echo "Root of repo:"
-          dir /B
-          echo
-          echo "deploy/ folder contents:"
+          move pyu-data\deploy\* deploy\
+
+      - name: Debug deploy folder
+        run: |
+          echo "Contents of deploy/:"
           dir deploy /S /B
 
       - name: Deploy to GitHub Pages
