@@ -2,7 +2,7 @@ name: Build & Publish ASSigner
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -13,22 +13,22 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
+
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v4
-        with: { python-version: '3.11' }
+        with:
+          python-version: '3.11'
 
       - name: Extract version
         id: extract_version
         shell: pwsh
         run: |
-          $m = [regex]::Match((Get-Content -Raw ASSigner.py),
-               '^__version__\s*=\s*["''](?<v>[^"'']+)["'']','Multiline');
+          $m = [regex]::Match((Get-Content -Raw ASSigner.py), '^__version__\s*=\s*["''](?<v>[^"'']+)["'']','Multiline')
           if (-not $m.Success) { throw "No __version__" }
-          "ASSIGNER_VER=$($m.Groups['v'].Value)" |
-            Out-File -Encoding ASCII -Append $Env:GITHUB_ENV
+          "ASSIGNER_VER=$($m.Groups['v'].Value)" | Out-File -Append -Encoding ASCII $Env:GITHUB_ENV
 
       - name: Install deps
         run: pip install --upgrade pip && pip install -r requirements.txt pyupdater pyupdater-http
@@ -37,24 +37,20 @@ jobs:
         run: cmd /c "set PLAYWRIGHT_BROWSERS_PATH=0 && playwright install chromium"
 
       - name: PyUpdater build
-        run: pyupdater build --console --app-version ${{ env.ASSIGNER_VER }} ASSigner.py
+        run: pyupdater build --console --app-name "ASSigner" --app-version ${{ env.ASSIGNER_VER }} ASSigner.py
 
-      - name: Restore PyUpdater key
+      - name: Debug pyu-data/new
         shell: pwsh
-        run: |
-          mkdir .\.pyupdater\private_keys -Force;
-          "${{ secrets.PYUPDATER_KEY }}" |
-            Out-File -Encoding ASCII .\.pyupdater\private_keys\key.pem;
-          icacls .\.pyupdater\private_keys\key.pem /inheritance:r /grant:r "$($Env:USERNAME):R"
+        run: Write-Host ">>> new contents:"; Get-ChildItem .\pyu-data\new -Recurse | ForEach-Object FullName
 
-      - name: PyUpdater package & sign
-        run: pyupdater pkg --process --sign --debug
+      - name: PyUpdater package
+        run: pyupdater pkg --process --debug
 
-      - name: Debug deploy artifacts
+      - name: Debug pyu-data/deploy
         shell: pwsh
-        run: Write-Host ">>> pyu-data/deploy contents:"; Get-ChildItem .\pyu-data\deploy -Recurse | ForEach-Object FullName
+        run: Write-Host ">>> deploy contents:"; Get-ChildItem .\pyu-data\deploy -Recurse | ForEach-Object FullName
 
-      - name: Publish to GitHub Pages
+      - name: Publish to gh-pages
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
