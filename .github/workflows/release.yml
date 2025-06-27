@@ -27,12 +27,10 @@ jobs:
         id: extract_version
         shell: pwsh
         run: |
-          $text = Get-Content -Raw ASSigner.py
+          $text    = Get-Content -Raw ASSigner.py
           $pattern = '^__version__\s*=\s*["''](?<v>[^"'']+)["'']'
           $match   = [regex]::Match($text, $pattern, 'Multiline')
-          if (-not $match.Success) {
-            Write-Error "Could not find __version__ in ASSigner.py"; exit 1
-          }
+          if (-not $match.Success) { Write-Error "No __version__" ; exit 1 }
           $ver = $match.Groups['v'].Value
           Write-Host "Parsed version: $ver"
           "ASSIGNER_VER=$ver" | Out-File -Encoding ASCII -Append $Env:GITHUB_ENV
@@ -51,16 +49,13 @@ jobs:
           playwright install chromium
 
       - name: Build ASSigner EXE
-        run: |
-          pyinstaller ASSigner.spec
+        run: pyinstaller ASSigner.spec
 
       - name: Copy built EXE into PyUpdater files folder
         shell: pwsh
         run: |
           mkdir .\pyu-data\files -Force
-          Copy-Item -Path .\dist\ASSigner.exe `
-                    -Destination .\pyu-data\files\ASSigner.exe `
-                    -Force
+          Copy-Item .\dist\ASSigner.exe .\pyu-data\files\ASSigner.exe -Force
 
       - name: Restore PyUpdater key
         shell: pwsh
@@ -73,14 +68,12 @@ jobs:
         run: mkdir deploy
 
       - name: Package update with PyUpdater
-        run: |
-          pyupdater pkg --app-name "ASSigner" --version ${{ env.ASSIGNER_VER }} --process
+        run: pyupdater pkg --app-name "ASSigner" --version ${{ env.ASSIGNER_VER }} --process
 
       - name: Move PyUpdater output into deploy/
         shell: pwsh
         run: |
-          Copy-Item -Path .\pyu-data\deploy\json\*  -Destination .\deploy -Recurse -Force
-          Copy-Item -Path .\pyu-data\deploy\files\* -Destination .\deploy -Recurse -Force
+          Copy-Item -Path .\pyu-data\deploy\* -Destination .\deploy -Recurse -Force
 
       - name: Debug deploy folder
         shell: pwsh
