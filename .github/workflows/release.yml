@@ -27,9 +27,7 @@ jobs:
         shell: pwsh
         run: |
           $text = Get-Content -Raw -Encoding UTF8 ASSigner.py
-          Write-Host "Version-related lines:"
-          $text -split "`n" | Where-Object { $_ -match 'version' } | ForEach-Object { Write-Host $_ }
-          if ($text -match '^\s*__version__\s*=\s*["'']([^"'']+)["'']' -m) {
+          if ($text -match '(?m)^\s*__version__\s*=\s*["'']([^"'']+)["'']') {
             Write-Output "VERSION_ASSIGNER=$($matches[1])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           } else {
             throw "Could not find __version__ in ASSigner.py"
