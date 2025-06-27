@@ -72,10 +72,7 @@ jobs:
 
       - name: Package update with PyUpdater
         run: |
-          pyupdater pkg \
-            --app-name "ASSigner" \
-            --version ${{ env.ASSIGNER_VER }} \
-            --process
+          pyupdater pkg --app-name "ASSigner" --version ${{ env.ASSIGNER_VER }} --process
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
