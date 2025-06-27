@@ -27,11 +27,24 @@ jobs:
         id: extract_version
         shell: pwsh
         run: |
+          # Read the entire file
           $text = Get-Content -Raw ASSigner.py
-          $ver  = [regex]::Match($text, '^\_\_version\_\_\s*=\s*["''](?<v>[^"'']+)["'']', 'Multiline').Groups['v'].Value
-          if (-not $ver) { throw "Couldn't parse __version__" }
+
+          # Use a double-quoted string so we can embed both single and double quotes
+          $pattern = "^__version__\s*=\s*[""'](?<v>[^""']+)[""']"
+
+          # Perform a multiline match
+          $match = [regex]::Match($text, $pattern, 'Multiline')
+
+          if (-not $match.Success) {
+            Write-Error "Could not find __version__ in ASSigner.py"
+            exit 1
+          }
+
+          $ver = $match.Groups['v'].Value
           Write-Host "Parsed version: $ver"
-          # Export to GitHub Actions env
+
+          # Export to GitHub Actions environment
           "ASSIGNER_VER=$ver" | Out-File -Encoding ASCII -Append $Env:GITHUB_ENV
 
       - name: Show the version
