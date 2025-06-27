@@ -30,9 +30,9 @@ jobs:
           $text    = Get-Content -Raw ASSigner.py
           $pattern = '^__version__\s*=\s*["''](?<v>[^"'']+)["'']'
           $match   = [regex]::Match($text, $pattern, 'Multiline')
-          if (-not $match.Success) { Write-Error "No __version__" ; exit 1 }
+          if (-not $match.Success) { Write-Error "No __version__"; exit 1 }
           $ver = $match.Groups['v'].Value
-          Write-Host "Parsed version: $ver"
+          Write-Host "Version: $ver"
           "ASSIGNER_VER=$ver" | Out-File -Encoding ASCII -Append $Env:GITHUB_ENV
 
       - name: Show the version
@@ -55,7 +55,16 @@ jobs:
         shell: pwsh
         run: |
           mkdir .\pyu-data\files -Force
-          Copy-Item .\dist\ASSigner.exe .\pyu-data\files\ASSigner.exe -Force
+          Copy-Item `
+            -Path .\dist\ASSigner.exe `
+            -Destination .\pyu-data\files\ASSigner.exe `
+            -Force
+
+      - name: Debug pyu-data/files
+        shell: pwsh
+        run: |
+          Write-Host "`n>>> pyu-data/files contents:"
+          Get-ChildItem .\pyu-data\files -Recurse | ForEach-Object FullName
 
       - name: Restore PyUpdater key
         shell: pwsh
@@ -70,6 +79,12 @@ jobs:
       - name: Package update with PyUpdater
         run: pyupdater pkg --app-name "ASSigner" --version ${{ env.ASSIGNER_VER }} --process
 
+      - name: Debug pyu-data/deploy
+        shell: pwsh
+        run: |
+          Write-Host "`n>>> pyu-data/deploy contents:"
+          Get-ChildItem .\pyu-data\deploy -Recurse | ForEach-Object FullName
+
       - name: Move PyUpdater output into deploy/
         shell: pwsh
         run: |
@@ -78,7 +93,7 @@ jobs:
       - name: Debug deploy folder
         shell: pwsh
         run: |
-          Write-Host "Contents of deploy/:"
+          Write-Host "`n>>> deploy/ contents:"
           Get-ChildItem .\deploy -Recurse | ForEach-Object FullName
 
       - name: Deploy to GitHub Pages
