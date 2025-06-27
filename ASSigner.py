@@ -101,6 +101,7 @@ CONTRACTOR_NAME_CORRECTIONS = {
         "dooley": "Dooley Heflin",
         "george": "George Stone",
         "john": "John Orton",
+        "tanner": "Tanner Lee Mcelhaney"
     },
     "TGS Fiber": {
         "jacob": "Jacob Jones",
@@ -109,6 +110,7 @@ CONTRACTOR_NAME_CORRECTIONS = {
         "kyle": "Kyle Thatcher",
         "blake": "Blake Wellman",
         "adam": "Adam Ward",
+        "chris": "Chris Bridgman"
     },
     "Tex-Star Communications": {
         "robby": "Robby Cowart",

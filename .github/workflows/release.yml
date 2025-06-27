@@ -82,9 +82,10 @@ jobs:
           move pyu-data\deploy\* deploy\
 
       - name: Debug deploy folder
+        shell: pwsh
         run: |
-          echo "Contents of deploy/:"
-          dir deploy /S /B
+          Write-Host "Contents of deploy/:"
+          Get-ChildItem deploy -Recurse | ForEach-Object FullName
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
