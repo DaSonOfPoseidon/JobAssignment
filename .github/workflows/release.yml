@@ -33,6 +33,11 @@ jobs:
             throw "Could not find __version__ in ASSigner.py"
           }
 
+      - name: Clean previous build artifacts
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force .\.pyupdater, .\pyu-data, .\build, .\dist -ErrorAction SilentlyContinue
+
       - name: Upgrade pip and install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -49,7 +54,7 @@ jobs:
         env:
           VERSION_ASSIGNER: ${{ env.VERSION_ASSIGNER }}
         run: |
-          pyupdater build --console --app-version=$env:VERSION_ASSIGNER ASSigner.py
+          pyupdater build --console --app-version=$env:VERSION_ASSIGNER --name ASSigner ASSigner.py
 
       - name: Debug pyu-data/new contents
         shell: pwsh

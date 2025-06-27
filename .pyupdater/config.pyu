@@ -4,6 +4,7 @@
   "count": 0,
   "app_config": {
     "APP_NAME": "ASSigner",
+    "APP_VERSION": "0.1.0",
     "CLIENT_CONFIG_PATH": [
       "client_config.py"
     ],
