@@ -1,7 +1,8 @@
 name: Build & Publish ASSigner
 
 on:
-  push: { branches: [main] }
+  push:
+    branches: [ main ]
   workflow_dispatch:
 
 permissions:
@@ -11,38 +12,59 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-        name: Checkout code
 
-      - uses: actions/setup-python@v4
-        name: Set up Python
-        with: { python-version: '3.11' }
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
 
       - name: Extract version
-        id: ver
-        shell: pwsh
+        id: extract_version
+        shell: bash
         run: |
-          $m=[regex]::Match((Get-Content -Raw ASSigner.py),'^__version__\s*=\s*["''](?<v>[^"'']+)["'']','Multiline'); if(-not $m.Success){throw "No __version__"}; "ASSIGNER_VER=$($m.Groups['v'].Value')"|Out-File -Append -Encoding ASCII $Env:GITHUB_ENV
+          echo VERSION_ASSIGNER=$(python - << 'EOF'
+          import re
+          text = open('ASSigner.py').read()
+          m = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', text, re.M)
+          print(m.group(1) if m else sys.exit(1))
+          EOF
+          ) >> $GITHUB_ENV
 
-      - name: Install deps
+      - name: Install dependencies
         run: pip install --upgrade pip && pip install -r requirements.txt pyupdater pyupdater-http
 
-      - name: Install Playwright
+      - name: Install Playwright browsers
         run: cmd /c "set PLAYWRIGHT_BROWSERS_PATH=0 && playwright install chromium"
 
       - name: PyUpdater build
         shell: pwsh
-        run: pyupdater build --console --app-name=ASSigner --app-version=${{ env.ASSIGNER_VER }} ASSigner.py
+        run: >
+          pyupdater build
+          --console
+          --app-name=ASSigner
+          --app-version=${{ env.VERSION_ASSIGNER }}
+          ASSigner.py
 
-      - name: PyUpdater pkg
+      - name: Debug pyu-data/new
+        shell: pwsh
+        run: >
+          Write-Host ">>> pyu-data/new contents:";
+          Get-ChildItem .\pyu-data\new -Recurse | ForEach-Object FullName
+
+      - name: PyUpdater package
         run: pyupdater pkg --process --debug
 
-      - name: Debug deploy
+      - name: Debug pyu-data/deploy
         shell: pwsh
-        run: Write-Host ">>> pyu-data/deploy:"; Get-ChildItem .\pyu-data\deploy -Recurse|ForEach-Object FullName
+        run: >
+          Write-Host ">>> pyu-data/deploy contents:";
+          Get-ChildItem .\pyu-data\deploy -Recurse | ForEach-Object FullName
 
-      - name: Publish gh-pages
+      - name: Publish to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
