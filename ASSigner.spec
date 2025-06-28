@@ -1,22 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-from PyInstaller.utils.hooks import collect_submodules
-import os
-
-hidden_nacl = collect_submodules('nacl.bindings') + ['_cffi_backend']
-
-# whatever Playwright needs
-hidden_playwright = ['playwright.__main__']
-
-# combine them
-all_hidden = hidden_playwright + hidden_nacl
 
 a = Analysis(
     ['ASSigner.py'],
-    pathex=[os.path.abspath('.')],
+    pathex=[],
     binaries=[],
-    datas=[('client_config.py', '.')],
-    hiddenimports=all_hidden,
+    datas=[],
+    hiddenimports=['playwright.__main__'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
