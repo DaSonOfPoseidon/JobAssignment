@@ -50,7 +50,7 @@ jobs:
       - name: Trigger exeFiles update
         uses: peter-evans/repository-dispatch@v2
         with:
-          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          token: ${{ secrets.PAT }}
           repository: ${{ env.EXE_REPO }}
           event-type: exe_update
           client-payload: |
