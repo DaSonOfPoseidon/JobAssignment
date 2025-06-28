@@ -53,6 +53,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Create and push tag
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git tag -a v${{ env.VERSION }} -m "Tagging version v${{ env.VERSION }}"
+          git push origin v${{ env.VERSION }}
+          
       - name: Upload EXE to GitHub Release
         uses: softprops/action-gh-release@v1
         with:
