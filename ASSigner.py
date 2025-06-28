@@ -27,7 +27,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 #
 #
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 def get_project_root() -> str: #Returns the root directory of the project as a string path.
     # return string path for PROJECT_ROOT
