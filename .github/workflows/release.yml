@@ -1,79 +1,61 @@
-name: Build & Publish ASSigner
+name: Build and Dispatch EXE
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pages: write
+  contents: read
+  actions: write
+
+env:
+  EXE_REPO: DaSonOfPoseidon/exeFiles
 
 jobs:
   build:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: 3.11
 
-      - name: Extract version from ASSigner.py
-        id: extract_version
+      - name: Install dependencies
+        run: pip install pyinstaller
+
+      - id: extract_version
         shell: pwsh
         run: |
           $text = Get-Content -Raw -Encoding UTF8 ASSigner.py
           if ($text -match '(?m)^\s*__version__\s*=\s*["'']([^"'']+)["'']') {
-            Write-Output "VERSION_ASSIGNER=$($matches[1])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            Write-Output "VERSION=$($matches[1])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           } else {
-            throw "Could not find __version__ in ASSigner.py"
+            throw "Version not found in ASSigner.py"
           }
 
-      - name: Clean previous build artifacts
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force .\.pyupdater, .\pyu-data, .\build, .\dist -ErrorAction SilentlyContinue
+      - name: Build executable
+        run: pyinstaller ASSigner.spec
 
-      - name: Upgrade pip and install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt pyupdater pyupdater-http
-
-      - name: Install Playwright browsers
-        shell: pwsh
-        run: |
-          $Env:PLAYWRIGHT_BROWSERS_PATH = "0"
-          playwright install chromium
-
-      - name: PyUpdater build
-        shell: pwsh
-        env:
-          VERSION_ASSIGNER: ${{ env.VERSION_ASSIGNER }}
-        run: |
-          pyupdater build --console --app-version=$env:VERSION_ASSIGNER --name ASSigner ASSigner.py
-
-      - name: Debug pyu-data/new contents
-        shell: pwsh
-        run: |
-          Write-Host ">>> pyu-data/new contents:"
-          Get-ChildItem .\pyu-data\new -Recurse | ForEach-Object FullName
-
-      - name: PyUpdater package
-        run: pyupdater pkg --app-name ASSigner --process --debug
-
-      - name: Debug pyu-data/deploy contents
-        shell: pwsh
-        run: |
-          Write-Host ">>> pyu-data/deploy contents:"
-          Get-ChildItem .\pyu-data\deploy -Recurse | ForEach-Object FullName
-
-      - name: Publish to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v3
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./pyu-data/deploy
-          publish_branch: gh-pages
+          name: assigner-exe
+          path: dist/ASSigner.exe
+
+      - name: Trigger exeFiles update
+        uses: peter-evans/repository-dispatch@v2
+        with:
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          repository: ${{ env.EXE_REPO }}
+          event-type: exe_update
+          client-payload: |
+            {
+              "exe_name": "ASSigner.exe",
+              "version": "${{ env.VERSION }}",
+              "artifact_name": "assigner-exe"
+            }
