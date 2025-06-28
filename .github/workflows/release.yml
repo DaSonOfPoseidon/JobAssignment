@@ -41,28 +41,32 @@ jobs:
       - name: Build executable
         run: pyinstaller ASSigner.spec
 
-      - name: Create or update GitHub Release
-        id: create_release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ env.VERSION }}
-          name: Release ${{ env.VERSION }}
-          body: Automated release of ASSigner.exe version ${{ env.VERSION }}
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Create and push tag
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-          git tag -a v${{ env.VERSION }} -m "Tagging version v${{ env.VERSION }}"
-          git push origin v${{ env.VERSION }}
-          
-      - name: Upload EXE to GitHub Release
+          TAG="v${{ env.VERSION }}"
+          if ! git rev-parse "$TAG" >/dev/null 2>&1; then
+            git tag -a "$TAG" -m "Release version $TAG"
+            git push origin "$TAG"
+          else
+            echo "Tag $TAG already exists"
+          fi
+
+      - name: Create or update GitHub Release
+        id: create_release
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: v${{ env.VERSION }}
+          name: Release v${{ env.VERSION }}
+          body: Automated release of ASSigner.exe version v${{ env.VERSION }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload EXE to release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ env.VERSION }}   # add this line to specify which release
           files: dist/ASSigner.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
