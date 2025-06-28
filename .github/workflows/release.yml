@@ -42,7 +42,7 @@ jobs:
         run: pyinstaller ASSigner.spec
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: assigner-exe
           path: dist/ASSigner.exe
