@@ -1,4 +1,4 @@
-name: Build and Dispatch EXE
+name: Build and Release EXE
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write   # needed for release creation and asset upload
   actions: write
 
 env:
@@ -41,21 +41,34 @@ jobs:
       - name: Build executable
         run: pyinstaller ASSigner.spec
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Create or update GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
         with:
-          name: assigner-exe
-          path: dist/ASSigner.exe
+          tag_name: ${{ env.VERSION }}
+          name: Release ${{ env.VERSION }}
+          body: Automated release of ASSigner.exe version ${{ env.VERSION }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload EXE to GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/ASSigner.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Trigger exeFiles update
         uses: peter-evans/repository-dispatch@v2
         with:
-          token: ${{ secrets.PAT }}
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
           repository: ${{ env.EXE_REPO }}
           event-type: exe_update
           client-payload: |
             {
               "exe_name": "ASSigner.exe",
               "version": "${{ env.VERSION }}",
-              "artifact_name": "assigner-exe"
+              "release_repo": "JobAssignment"
             }
