@@ -27,7 +27,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 #
 #
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 def get_project_root() -> str: #Returns the root directory of the project as a string path.
     # return string path for PROJECT_ROOT
@@ -50,10 +50,13 @@ def get_project_root() -> str: #Returns the root directory of the project as a s
 # Then:
 PROJECT_ROOT = get_project_root()
 OUTPUT_DIR  = os.path.join(PROJECT_ROOT, "Outputs")
-ENV_PATH    = os.path.join(PROJECT_ROOT, ".env")
+MISC_DIR = os.path.join(PROJECT_ROOT, "Misc")
+ENV_PATH    = os.path.join(MISC_DIR, ".env")
 BROWSERS    = os.path.join(PROJECT_ROOT, "browsers")
 LOG_FOLDER  = os.path.join(PROJECT_ROOT, "logs")
-LOG_FILE    = os.path.join(LOG_FOLDER, "playwright_install.log")
+PWLOG_FILE    = os.path.join(LOG_FOLDER, "playwright_install.log")
+LOG_FILE    = os.path.join(LOG_FOLDER, "Assigner.log")
+HTML_PATH = os.path.join(OUTPUT_DIR, "firstjobsummary.html")
 
 UPDATE_MODE = None
 
@@ -138,7 +141,7 @@ log_lines = []
 
 class PlaywrightDriver:
     def __init__(self, headless=True, state_path=None, playwright=None, browser=None):
-        self.state_path = state_path or os.path.join(PROJECT_ROOT, "state.json")
+        self.state_path = state_path or os.path.join(MISC_DIR, "state.json")
         if playwright and browser:
             self._pw = playwright
             self.browser = browser
@@ -741,7 +744,7 @@ def is_headless():
     except:
         return False
 
-def save_and_open_html(html_str, filename="FirstJobsSummary.html"):
+def save_and_open_html(html_str, filename=HTML_PATH):
     # Write HTML to file
     with open(filename, "w", encoding="utf-8") as f:
         f.write(html_str)
@@ -941,19 +944,6 @@ def assign_jobs(df, contractor_label=None):
 
     driver.close()  # Clean up browser at the end
     gui_log(f"\n✅ Done processing work orders.")
-
-def check_for_update():
-    client = Client(ClientConfig(), refresh=True)
-    latest = client.update_check(ClientConfig.APP_NAME, __version__)
-    if not latest:
-        print("✓ No update available.")
-        return
-    print(f"⬆️  Update found! {latest.version} → downloading…")
-    if client.download(latest):
-        print("✅ Download complete, restarting into new version…")
-        client.extract_restart()  # replaces EXE and relaunches
-    else:
-        print("❌ Download failed.")
 
 # ===== Contractor Parsers =====
 
@@ -1333,7 +1323,7 @@ CONTRACTOR_FORMAT_PARSERS = {
 
 def create_gui():
     app = TkinterDnD.Tk()
-    app.title("Drop Excel File or Paste Schedule Text")
+    app.title(f"ASSigner v{__version__}")
     app.geometry("600x800")
 
     label = tk.Label(app, text="Drag and drop your Excel file here", width=60, height=5, bg="lightgray")
@@ -1484,11 +1474,6 @@ if __name__ == "__main__":
     try:
         parser = argparse.ArgumentParser()
         parser.add_argument(
-            '--update',
-            action='store_true',
-            help="Check for a new version and apply it"
-        )
-        parser.add_argument(
             '--version',
             action='store_true',
             help="Print current version and exit"
@@ -1499,9 +1484,6 @@ if __name__ == "__main__":
             print(__version__)
             sys.exit(0)
 
-        if args.update:
-            check_for_update()
-            sys.exit(0)
         try:
             os.environ["PLAYWRIGHT_BROWSERS_PATH"] = BROWSERS
             print(f"PLAYWRIGHT_BROWSERS_PATH set to {BROWSERS}")
@@ -1516,7 +1498,7 @@ if __name__ == "__main__":
                 messagebox.showerror("Startup Error", f"Playwright setup failed: {e}\nSee log for details.")
                 root.destroy()
             except Exception:
-                print(f"Playwright setup failed: {e}. See log at {LOG_FILE}")
+                print(f"Playwright setup failed: {e}. See log at {PWLOG_FILE}")
 
         create_gui()
     except Exception as e:
