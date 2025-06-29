@@ -27,7 +27,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 #
 #
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 
 def get_project_root() -> str: #Returns the root directory of the project as a string path.
     # return string path for PROJECT_ROOT
@@ -120,7 +120,9 @@ CONTRACTOR_NAME_CORRECTIONS = {
         "tommu": "Tommy Estrada",
         "frank": "Francisco Morales",
         "marcus": "Demarcus Blackmon",
-        "don": "Donald Fuller"
+        "don": "Donald Fuller",
+        "jesse": "Jesse New",
+        "junior": "Uriel Gonzalez"
     },
     "Pifer Quality Communications": {
         "caleb": "Caleb Pifer",
