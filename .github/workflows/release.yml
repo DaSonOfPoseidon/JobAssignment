@@ -6,11 +6,8 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # needed for release creation and asset upload
+  contents: write
   actions: write
-
-env:
-  EXE_REPO: DaSonOfPoseidon/exeFiles
 
 jobs:
   build:
@@ -40,6 +37,8 @@ jobs:
 
       - name: Build executable
         run: pyinstaller ASSigner.spec
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create and push tag
         shell: bash
@@ -67,20 +66,7 @@ jobs:
       - name: Upload EXE to release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v${{ env.VERSION }}   # add this line to specify which release
+          tag_name: v${{ env.VERSION }} 
           files: dist/ASSigner.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Trigger exeFiles update
-        uses: peter-evans/repository-dispatch@v2
-        with:
-          token: ${{ secrets.PAT }}
-          repository: ${{ env.EXE_REPO }}
-          event-type: exe_update
-          client-payload: |
-            {
-              "exe_name": "ASSigner.exe",
-              "version": "${{ env.VERSION }}",
-              "release_repo": "JobAssignment"
-            }
